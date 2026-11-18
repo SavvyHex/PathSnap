@@ -229,7 +229,7 @@ directories, clear all four environment overrides in your PowerShell session.
 ### Tests
 
 ```powershell
-python -m pip install httpx
+python -m pip install httpx httpx2
 python -m unittest discover -s tests -v
 node --test tests/test_ui.cjs
 ```

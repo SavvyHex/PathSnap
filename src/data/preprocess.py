@@ -218,6 +218,10 @@ def generate_candidates(track, nodes, arcs):
             frame["proj_lon"] = lon[row,col]
             frame["frac_along"] = frac[row,col]
             frames.append(frame)
+    if not frames:
+        columns = ["trip_id","obs_id","latitude","longitude","seconds","obs_rank",
+                   "candidate_id","dist_to_segment_m","proj_lat","proj_lon","frac_along"]
+        return pd.DataFrame(columns=columns), geo
     return pd.concat(frames,ignore_index=True).sort_values(["obs_id","obs_rank"]).reset_index(drop=True), geo
 
 
@@ -259,16 +263,6 @@ def main():
                     report_rows.append({"trip": tid, "partition": partition,
                                         "status": "MISSING FOLDER"})
             trips = [t for t in trips if t in present]
-        for tid in trips:
-            folder = base / tid
-            print(f"[preprocess] {partition}/{tid} ...", flush=True)
-            tid, track, nodes, arcs, route_ids = parse_trip(folder)
-            report_rows.append({
-                "trip": extra,
-                "partition": partition,
-                "status": "UNEXPECTED FOLDER",
-            })
-
         # Process only the configured trip IDs.
         for trip_id in trips:
 
