@@ -131,17 +131,23 @@ def main() -> None:
         net_dir = DATA_CLEAN / "network"
         out_dir.mkdir(parents=True, exist_ok=True)
         net_dir.mkdir(parents=True, exist_ok=True)
-        present = {p.name for p in base.iterdir() if p.is_dir()}
-        expected = set(trips)
-        for extra in sorted(present - expected):
-            report_rows.append({"trip": extra, "partition": partition,
-                                "status": "UNEXPECTED FOLDER (not in expected id list)"})
+        present = sorted(p.name for p in base.iterdir() if p.is_dir())
+        if partition == "train":
+            # the brief fixes the train set at 80 trips; the exact ids are
+            # discovered from disk (the 1-99 numbering has gaps)
+            trips = present
+            if len(present) != 80:
+                report_rows.append({"trip": "-", "partition": partition,
+                                    "status": f"NOTE: brief expects 80 train trips, found {len(present)}"})
+        else:
+            # test trip ids are explicitly named by the team; absence is loud
+            for tid in trips:
+                if tid not in present:
+                    report_rows.append({"trip": tid, "partition": partition,
+                                        "status": "MISSING FOLDER"})
+            trips = [t for t in trips if t in present]
         for tid in trips:
             folder = base / tid
-            if tid not in present:
-                report_rows.append({"trip": tid, "partition": partition,
-                                    "status": "MISSING FOLDER"})
-                continue
             print(f"[preprocess] {partition}/{tid} ...", flush=True)
             tid, track, nodes, arcs, route_ids = parse_trip(folder)
             report_rows.append({
