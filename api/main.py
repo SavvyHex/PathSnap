@@ -1,116 +1,221 @@
-"""PathSnap FastAPI backend.
-
-Runs on laptop 1 during evaluation. Loads the tuned model and HMM
-configuration once at startup. Ground-truth reference segments live in
-api/reference/ (server-side only) and are never sent to the model or
-the UI - the /predict endpoint uses them only to compute accuracy.
-
-Endpoints:
-  GET  /trips                 list the reserved evaluation trip ids
-  POST /predict/{trip_id}     run the full pipeline on one trip and
-                              return the decoded route + accuracy
-  GET  /health                liveness check
-"""
-import json
+"""PathSnap evaluator API. Reference data is used only after decoding."""
 import logging
+import math
+import os
 import time
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
-import joblib
-import numpy as np
-import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
-from src.config import ARTIFACTS, DATA_CLEAN, REFERENCE, HMM_BETA
-from src.features.build_features import haversine_m, motion_features
-from src.hmm.viterbi import viterbi
-
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("pathsnap.api")
-
-app = FastAPI(title="PathSnap", version="1.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"],
-                   allow_methods=["*"], allow_headers=["*"])
-
-MODEL = None
-X_COLS = None
-EVAL_DIR = DATA_CLEAN / "evaluator"   # reserved trips, features precomputed
+from api.evaluator_adapter import TRIP_ID, available_trip_files, trip_files
+from api.geometry import geometry_unavailable, index_road_arcs, load_network, resolve_geometry
+from api.inference import MODEL_COLUMNS, load_model, predict_route
+from api.scoring import overlap_unavailable, score_arc_overlap, score_route
+from src.config import ARTIFACTS, DATA_CLEAN, HMM_BETA, REFERENCE
 
 
-@app.on_event("startup")
-def load_artifacts():
-    global MODEL, X_COLS
-    MODEL = joblib.load(ARTIFACTS / "model_tuned.joblib")
-    X_COLS = json.loads((ARTIFACTS / "feature_columns.json").read_text())
-    log.info("model loaded: %d features", len(X_COLS))
+log = logging.getLogger("uvicorn.error").getChild("pathsnap")
+DEMO_ID = "development-demo"
 
 
-@app.get("/health")
-def health():
-    return {"status": "ok", "model_loaded": MODEL is not None}
+@dataclass(frozen=True)
+class Settings:
+    mode: str = "evaluation"
+    evaluator_dir: Path = DATA_CLEAN / "evaluator"
+    artifacts_dir: Path = ARTIFACTS
+    reference_dir: Path = REFERENCE
+    cors_origins: tuple[str, ...] = ("http://localhost:8080", "http://127.0.0.1:8080")
+    beta: float = HMM_BETA
+    network_dir: Path = DATA_CLEAN / "network"
+    network_source_dir: Path | None = None
+    route_reference_dir: Path | None = None
+
+    @classmethod
+    def from_env(cls):
+        defaults = cls()
+        origins = os.getenv("PATHSNAP_CORS_ORIGINS", ",".join(defaults.cors_origins))
+        network_source = os.getenv("PATHSNAP_NETWORK_SOURCE_DIR")
+        route_reference = os.getenv("PATHSNAP_ROUTE_REFERENCE_DIR")
+        settings = cls(
+            mode=os.getenv("PATHSNAP_MODE", defaults.mode),
+            evaluator_dir=Path(os.getenv("PATHSNAP_EVALUATOR_DIR", defaults.evaluator_dir)),
+            artifacts_dir=Path(os.getenv("PATHSNAP_ARTIFACTS_DIR", defaults.artifacts_dir)),
+            reference_dir=Path(os.getenv("PATHSNAP_REFERENCE_DIR", defaults.reference_dir)),
+            cors_origins=tuple(origin.strip() for origin in origins.split(",") if origin.strip()),
+            beta=float(os.getenv("PATHSNAP_HMM_BETA", defaults.beta)),
+            network_dir=Path(os.getenv("PATHSNAP_NETWORK_DIR", defaults.network_dir)),
+            network_source_dir=Path(network_source) if network_source else None,
+            route_reference_dir=Path(route_reference) if route_reference else None,
+        )
+        if settings.mode not in {"development", "evaluation"}:
+            raise ValueError("PATHSNAP_MODE must be development or evaluation")
+        if not math.isfinite(settings.beta) or settings.beta <= 0:
+            raise ValueError("PATHSNAP_HMM_BETA must be finite and positive")
+        return settings
 
 
-@app.get("/trips")
-def trips():
-    if not EVAL_DIR.exists():
-        return {"trips": []}
-    return {"trips": sorted(p.stem for p in EVAL_DIR.glob("*.csv"))}
+def create_app(settings=None):
+    # Embedded callers can supply standalone classifiers through explicit settings.
+    allow_custom_classifier = (
+        settings is not None and settings.artifacts_dir.resolve() != ARTIFACTS.resolve()
+    )
+    settings = settings or Settings.from_env()
+
+    @asynccontextmanager
+    async def lifespan(app):
+        app.state.model_bundle = None
+        if settings.mode == "evaluation":
+            try:
+                app.state.model_bundle = load_model(
+                    settings.artifacts_dir,
+                    allow_custom_classifier=allow_custom_classifier,
+                )
+            except Exception:
+                log.exception("pathsnap.model_load_failed")
+        log.info("pathsnap.startup mode=%s model_loaded=%s",
+                 settings.mode, app.state.model_bundle is not None)
+        yield
+
+    app = FastAPI(title="PathSnap", version="1.1", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def request_log(request: Request, call_next):
+        request_id = uuid4().hex
+        started = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:
+            log.exception("pathsnap.request_failed request_id=%s", request_id)
+            response = JSONResponse({"detail": "The server could not complete the request."}, 500)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        response.headers["X-Request-ID"] = request_id
+        response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.1f}"
+        route = request.scope.get("route")
+        log.info("pathsnap.request request_id=%s method=%s route=%s status=%s elapsed_ms=%.1f",
+                 request_id, request.method, getattr(route, "path", "unmatched"),
+                 response.status_code, elapsed_ms)
+        return response
+
+    app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins),
+                       allow_methods=["GET", "POST"],
+                       expose_headers=["X-Request-ID", "Server-Timing"])
+
+    @app.get("/health")
+    def health():
+        return dict(status="ok", mode=settings.mode,
+                    model_loaded=app.state.model_bundle is not None)
+
+    def available_trips():
+        bundle = app.state.model_bundle
+        columns = bundle[1] if bundle is not None else MODEL_COLUMNS
+        try:
+            return available_trip_files(settings.evaluator_dir, columns)
+        except FileNotFoundError:
+            return {}
+
+    @app.get("/ready")
+    def readiness():
+        loaded = app.state.model_bundle is not None
+        if settings.mode == "development":
+            return dict(status="ready", mode=settings.mode, model_loaded=False)
+        try:
+            has_trips = bool(available_trips())
+        except OSError:
+            has_trips = False
+        ready = loaded and has_trips
+        return JSONResponse(dict(status="ready" if ready else "unavailable",
+                                 mode=settings.mode, model_loaded=loaded,
+                                 trips_available=has_trips), 200 if ready else 503)
+
+    @app.get("/trips")
+    def trips():
+        if settings.mode == "development":
+            return dict(mode=settings.mode, trips=[DEMO_ID])
+        return dict(mode=settings.mode, trips=sorted(available_trips()))
+
+    @app.post("/predict/{trip_id}")
+    def predict(trip_id: str):
+        started = time.perf_counter()
+        unknown = HTTPException(404, "Unknown trip.")
+        if not TRIP_ID.fullmatch(trip_id):
+            raise unknown
+        if settings.mode == "development":
+            if trip_id != DEMO_ID:
+                raise unknown
+            points = [(12.9337, 77.5332), (12.9341, 77.5340), (12.9346, 77.5345)]
+            route = [
+                dict(obs_id=i, segment=None, lat=lat, lon=lon, imputed=False)
+                for i, (lat, lon) in enumerate(points)
+            ]
+            return dict(mode=settings.mode, trip_id=trip_id, route=route,
+                        n_observations=len(route), n_imputed=None, top1_accuracy=None,
+                        scored_observations=0, elapsed_s=None, transition_model=None,
+                        route_kind="development_preview",
+                        gps_observations=[], inference_s=None, connected_geometry=None,
+                        route_completeness="unavailable", disconnected_transitions=None,
+                        geometry=dict(geometry_unavailable("development_preview"),
+                                      covered_observations=0, decoded_observations=0),
+                        route_overlap=overlap_unavailable("development_preview"))
+        try:
+            path = trip_files(settings.evaluator_dir).get(trip_id)
+        except FileNotFoundError:
+            path = None
+        if path is None:
+            raise unknown
+        if app.state.model_bundle is None:
+            raise HTTPException(503, "Model artifacts are unavailable.")
+        network = None
+        network_error = False
+        try:
+            network = load_network(settings.network_dir, trip_id, settings.network_source_dir)
+        except Exception:
+            log.exception("pathsnap.network_load_failed")
+            network_error = True
+        try:
+            inference_started = time.perf_counter()
+            route, gps, imputed, transition_model, disconnected, limitation = predict_route(
+                path, *app.state.model_bundle, settings.beta, network,
+            )
+            inference_s = round(time.perf_counter() - inference_started, 3)
+        except FileNotFoundError:
+            raise unknown
+        try:
+            accuracy, scored = score_route(settings.reference_dir / f"{trip_id}.csv", route)
+        except Exception:
+            log.exception("pathsnap.reference_scoring_failed")
+            accuracy, scored = None, 0
+        road_arcs = index_road_arcs(network)
+        geometry = (geometry_unavailable("invalid_network_data") if network_error
+                    else resolve_geometry(road_arcs, route))
+        geojson = geometry["geojson"]
+        geometry["covered_observations"] = len(geojson["features"]) if geojson else 0
+        geometry["decoded_observations"] = len(route)
+        overlap = overlap_unavailable("route_reference_not_configured")
+        if settings.route_reference_dir is not None:
+            reference = settings.route_reference_dir / trip_id / f"{trip_id}.route"
+            try:
+                overlap = score_arc_overlap(reference, route, road_arcs)
+            except (OSError, UnicodeError):
+                log.exception("pathsnap.route_reference_scoring_failed")
+                overlap = overlap_unavailable("invalid_route_reference")
+        completeness = ("unavailable" if not route else
+                        "partial" if disconnected or imputed or geometry["status"] == "partial"
+                        else "candidate_only")
+        return dict(mode=settings.mode, trip_id=trip_id, route=route, n_observations=len(gps),
+                    n_imputed=imputed, top1_accuracy=accuracy, scored_observations=scored,
+                    elapsed_s=round(time.perf_counter() - started, 3),
+                    transition_model=transition_model, route_kind="candidate_sequence",
+                    transition_limitation=limitation, disconnected_transitions=disconnected,
+                    gps_observations=gps, inference_s=inference_s,
+                    route_completeness=completeness, connected_geometry=None,
+                    geometry=geometry, route_overlap=overlap)
+
+    return app
 
 
-@app.post("/predict/{trip_id}")
-def predict(trip_id: str):
-    t0 = time.perf_counter()
-    log.info("predict requested trip=%s", trip_id)
-    path = EVAL_DIR / f"{trip_id}.csv"
-    if not path.exists():
-        log.warning("unknown trip requested: %s", trip_id)
-        raise HTTPException(404, f"unknown trip {trip_id}")
-
-    df = pd.read_csv(path)
-    proba = MODEL.predict_proba(df[X_COLS])[:, 1]
-    df = df.assign(score=proba)
-
-    obs_ids = sorted(df["obs_id"].unique())
-    cand_probs, lats, lons = [], [], []
-    for oid in obs_ids:
-        g = df[df["obs_id"] == oid]
-        cand_probs.append(g["score"].values)
-        lats.append(float(g["latitude"].iloc[0]))
-        lons.append(float(g["longitude"].iloc[0]))
-    gps_dists = [haversine_m(lats[t], lons[t], lats[t + 1], lons[t + 1])
-                 for t in range(len(obs_ids) - 1)]
-
-    def cand_dist_fn(a, b):
-        gap = sum(gps_dists[a:b])
-        return np.full((len(cand_probs[a]), len(cand_probs[b])), gap)
-
-    res = viterbi(cand_probs, gps_dists, cand_dist_fn, beta=HMM_BETA)
-
-    route, correct, total = [], 0, 0
-    for t, oid in enumerate(obs_ids):
-        g = df[df["obs_id"] == oid].iloc[res.sequence[t]] if res.sequence[t] >= 0 else None
-        if g is not None:
-            route.append({"obs_id": int(oid), "segment": str(g["candidate_id"]),
-                          "lat": lats[t], "lon": lons[t]})
-
-    accuracy = None
-    ref_path = REFERENCE / f"{trip_id}.csv"
-    if ref_path.exists():
-        ref = pd.read_csv(ref_path)
-        ref_map = dict(zip(ref["obs_id"], ref["matched_segment"]))
-        for r in route:
-            if r["obs_id"] in ref_map:
-                total += 1
-                correct += int(r["segment"] == str(ref_map[r["obs_id"]]))
-        accuracy = correct / total if total else None
-
-    elapsed = time.perf_counter() - t0
-    log.info("predict done trip=%s obs=%d imputed=%d accuracy=%s elapsed=%.3fs",
-             trip_id, len(obs_ids), len(res.imputed),
-             f"{accuracy:.4f}" if accuracy is not None else "n/a", elapsed)
-    return {"trip_id": trip_id, "n_observations": len(obs_ids),
-            "n_imputed": len(res.imputed),
-            "top1_accuracy": accuracy, "scored_observations": total,
-            "elapsed_s": round(elapsed, 3), "route": route}
+app = create_app()

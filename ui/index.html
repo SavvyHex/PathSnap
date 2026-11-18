@@ -1,27 +1,78 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <title>PathSnap evaluator</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <style>
-    body { font-family: system-ui, sans-serif; margin: 0; display: flex; height: 100vh; }
-    #side { width: 300px; padding: 16px; box-sizing: border-box; overflow: auto; }
-    #map { flex: 1; }
-    button { display: block; width: 100%; margin: 4px 0; padding: 8px; text-align: left; }
-    #stats { margin-top: 12px; font-size: 14px; white-space: pre-line; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; grid-template-columns: minmax(18rem, 23rem) 1fr;
+           font: 1rem/1.5 system-ui, sans-serif; color: #182a36; background: #f7fafb; }
+    aside { padding: 1.5rem; border-right: 1px solid #ccdbe2; }
+    h1 { margin: 0 0 1rem; }
+    form { display: grid; gap: .5rem; margin-bottom: 1.15rem; }
+    input, select, button { width: 100%; padding: .55rem; font: inherit; border-radius: .35rem; }
+    input, select { border: 1px solid #78909c; background: white; }
+    button { border: 1px solid #176650; background: #176650; color: white; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: default; }
+    #mode, #error { padding: .6rem; background: #fff1c9; }
+    #error { color: #842525; background: #ffe7e7; overflow-wrap: anywhere; }
+    dl { display: grid; grid-template-columns: 1fr auto; gap: .35rem .75rem; }
+    dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+    main { display: flex; flex-direction: column; min-width: 0; }
+    #map { flex: 1; min-height: 24rem; background: #e4edf0; }
+    #map-note { padding: .5rem 1rem; margin: 0; }
+    .map-tools { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; padding: .6rem 1rem; }
+    .map-tools button { width: auto; }
+    #map-legend { margin: 0; padding: 0; list-style: none; }
+    #map-legend li { display: inline-block; margin-right: .9rem; }
+    #map-legend li[hidden] { display: none; }
+    .swatch { display: inline-block; width: .9rem; height: .3rem; margin-right: .35rem; vertical-align: middle; }
+    .gps { background: #185aa7; width: .55rem; height: .55rem; border-radius: 50%; }
+    .arcs { background: #087760; }
+    .connected { background: #7a3cb1; }
+    @media (max-width: 700px) {
+      body { display: block; }
+      aside { border-right: 0; }
+      #map { min-height: 55vh; }
+    }
   </style>
 </head>
 <body>
-  <div id="side">
-    <h2>PathSnap</h2>
-    <p>Select one of the reserved evaluation trips.</p>
-    <div id="trips">Loading trips...</div>
-    <div id="stats"></div>
-  </div>
-  <div id="map"></div>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="app.js"></script>
+  <aside>
+    <h1>PathSnap evaluator</h1>
+    <form method="get">
+      <label for="api-url">API address</label>
+      <input id="api-url" name="api" type="url" required>
+      <button type="submit">Connect</button>
+    </form>
+    <p id="mode" hidden></p>
+    <form id="prediction-form">
+      <label for="trip">Trip</label>
+      <select id="trip" required disabled></select>
+      <button id="predict" type="submit" disabled>Run prediction</button>
+    </form>
+    <p id="status" role="status"></p>
+    <p id="error" role="alert" hidden></p>
+    <section id="results" aria-labelledby="results-heading" hidden>
+      <h2 id="results-heading">Results</h2>
+      <dl id="metrics"></dl>
+    </section>
+  </aside>
+  <main aria-label="Route visualisation">
+    <div class="map-tools">
+      <button id="fit-trip" type="button" disabled>Fit trip</button>
+      <ul id="map-legend" aria-label="Map legend" hidden>
+        <li id="legend-gps"><span class="swatch gps"></span>GPS observations</li>
+        <li id="legend-arcs"><span class="swatch arcs"></span>Predicted road arcs</li>
+        <li id="legend-connected"><span class="swatch connected"></span>Connected route</li>
+      </ul>
+    </div>
+    <div id="map"></div>
+    <p id="map-note"></p>
+  </main>
+  <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script defer src="app.js"></script>
 </body>
 </html>
