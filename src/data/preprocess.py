@@ -300,15 +300,6 @@ def main():
                     report_rows.append({"trip": tid, "partition": partition,
                                         "status": "MISSING FOLDER"})
             trips = [t for t in trips if t in present]
-        for tid in trips:
-            folder = base / tid
-            print(f"[preprocess] {partition}/{tid} ...", flush=True)
-            tid, track, nodes, arcs, route_ids = parse_trip(folder)
-            report_rows.append({
-                "trip": extra,
-                "partition": partition,
-                "status": "UNEXPECTED FOLDER",
-            })
 
         # Process only the configured trip IDs.
         for trip_id in trips:
