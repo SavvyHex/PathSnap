@@ -47,7 +47,13 @@ python -m src.models.train_zoo
 python -m src.models.optimize
 
 # 5. HMM/Viterbi reconstruction and classifier-only comparison
+# Default beta is 75 m, selected by the recorded training-trip sweep
+# (results/hmm_beta_tuning.csv). Options: --model {tuned,gnb,logreg,rf,et,dtree}
+# picks the emission classifier artifact, --beta overrides the transition scale.
+# Non-legacy runs write hmm_vs_classifier_<model>_beta<beta>.csv so the
+# committed baseline (tuned model, beta 30) is not overwritten.
 python -m src.hmm.compare
+python -m src.hmm.compare --model rf
 
 # 6. Generate Folium maps
 python -m maps.make_maps

@@ -1,4 +1,5 @@
 """Compare classifier-only and road-network HMM route reconstruction."""
+import argparse
 import json
 
 import joblib
@@ -73,10 +74,38 @@ def compare_trip(candidates, track, model, X_cols, graph, beta=HMM_BETA):
     }
 
 
+MODEL_CHOICES = ("tuned", "gnb", "logreg", "rf", "et", "dtree")
+
+# The committed results/hmm_vs_classifier.csv was recorded with the tuned model
+# at beta 30; only that exact combination keeps the legacy filename so the
+# recorded baseline is never silently overwritten.
+LEGACY_MODEL = "tuned"
+LEGACY_BETA = 30.0
+
+
+def _output_name(model_name: str, beta: float) -> str:
+    if model_name == LEGACY_MODEL and beta == LEGACY_BETA:
+        return "hmm_vs_classifier.csv"
+    return f"hmm_vs_classifier_{model_name}_beta{beta:g}.csv"
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--model", choices=MODEL_CHOICES, default="tuned",
+        help="emission classifier artifact: artifacts/model_<name>.joblib (default: tuned)",
+    )
+    parser.add_argument(
+        "--beta", type=float, default=HMM_BETA,
+        help=f"HMM transition scale in metres (default: config HMM_BETA={HMM_BETA:g})",
+    )
+    args = parser.parse_args()
+    if not np.isfinite(args.beta) or args.beta <= 0:
+        raise SystemExit("--beta must be finite and positive")
+
     df = pd.read_parquet(RESULTS / "features.parquet")
     X_cols = json.loads((ARTIFACTS / "feature_columns.json").read_text())
-    model = joblib.load(ARTIFACTS / "model_tuned.joblib")
+    model = joblib.load(ARTIFACTS / f"model_{args.model}.joblib")
     test = df[df["partition"] == "student_test"]
     rows = []
     for trip_id, candidates in test.groupby(COL_TRIP):
@@ -86,7 +115,7 @@ def main() -> None:
         track["obs_id"] = np.arange(len(track))
         arcs_path = DATA_CLEAN / "network" / f"{trip_id}.arcs.parquet"
         graph = RoadGraph(pd.read_parquet(arcs_path))
-        rows.append(compare_trip(candidates, track, model, X_cols, graph))
+        rows.append(compare_trip(candidates, track, model, X_cols, graph, beta=args.beta))
     out = pd.DataFrame(rows)
     if not out.empty:
         def weighted_mean(values, weights):
@@ -105,8 +134,10 @@ def main() -> None:
             "clf_transitions": out.clf_transitions.sum(), "hmm_transitions": out.hmm_transitions.sum(),
         }
     RESULTS.mkdir(parents=True, exist_ok=True)
-    out.to_csv(RESULTS / "hmm_vs_classifier.csv", index=False)
+    out_path = RESULTS / _output_name(args.model, args.beta)
+    out.to_csv(out_path, index=False)
     print(out.to_string(index=False))
+    print(f"[compare] model={args.model} beta={args.beta:g} -> {out_path}")
 
 
 if __name__ == "__main__":
