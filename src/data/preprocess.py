@@ -129,6 +129,7 @@ def main() -> None:
                 report_rows.append({"trip": tid, "partition": partition,
                                     "status": "MISSING FOLDER"})
                 continue
+            print(f"[preprocess] {partition}/{tid} ...", flush=True)
             tid, track, nodes, arcs, route_ids = parse_trip(folder)
             report_rows.append({
                 "trip": tid, "partition": partition, "status": "ok",
@@ -148,6 +149,8 @@ def main() -> None:
                 cand.loc[idx, "label"] = 1
             cand.to_parquet(out_dir / f"{tid}.parquet", index=False)
             geo.to_parquet(net_dir / f"{tid}.arcs.parquet", index=False)
+            print(f"[preprocess] {partition}/{tid} done: "
+                  f"{len(track)} obs, {len(cand)} candidates", flush=True)
     report = pd.DataFrame(report_rows)
     report.to_csv(RESULTS / "data_inspection.csv", index=False)
     print(report.to_string(index=False))
