@@ -9,3 +9,4 @@ student_test/
 Archive.zip
 results/*.png
 .DS_Store
+results/features.parquet
