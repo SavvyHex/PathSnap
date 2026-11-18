@@ -1,6 +1,11 @@
 
 """Raw-data parsing, cleaning, candidate generation and labelling.
 
+Run with --network-only to only (re)write the data/clean/network files
+from the raw .nodes/.arcs data (repairs network parquets saved by older
+versions that lack the from_node/to_node columns the HMM RoadGraph needs);
+candidate parquets and data_inspection.csv are left untouched in that mode.
+
 Input layout:
   train/<trip>/<trip>.{track,nodes,arcs,route}
   student_test/<trip>/<trip>.{track,nodes,arcs,route}
@@ -24,6 +29,8 @@ nearest candidate belonging to the reference route is labelled 1.
 Network files preserve directed endpoints and geodesic arc lengths
 in metres for the HMM transition stage.
 """
+
+import argparse
 
 import numpy as np
 import pandas as pd
@@ -221,8 +228,42 @@ def generate_candidates(track, nodes, arcs):
     return pd.concat(frames,ignore_index=True).sort_values(["obs_id","obs_rank"]).reset_index(drop=True), geo
 
 
+def build_network_geo(nodes, arcs):
+    """Directed arc geometry only (same schema as generate_candidates).
+
+    Used by --network-only to repair older data/clean/network files that
+    predate the from_node/to_node columns, without recomputing candidates.
+    """
+    node_xy = nodes.set_index("node_id")[
+        ["latitude", "longitude"]
+    ]
+    valid = (
+        arcs["from_node"].isin(node_xy.index)
+        & arcs["to_node"].isin(node_xy.index)
+    )
+    a = arcs[valid].copy()
+    return pd.DataFrame({
+        "arc_id": a["arc_id"].values,
+        "from_node": a["from_node"].values,
+        "to_node": a["to_node"].values,
+        "from_lat": node_xy.loc[a["from_node"], "latitude"].values,
+        "from_lon": node_xy.loc[a["from_node"], "longitude"].values,
+        "to_lat": node_xy.loc[a["to_node"], "latitude"].values,
+        "to_lon": node_xy.loc[a["to_node"], "longitude"].values,
+    })
+
+
 def main():
     """Preprocess training and student-test trips."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--network-only", action="store_true",
+        help="only (re)write data/clean/network/<trip>.arcs.parquet from the "
+             "raw .nodes/.arcs files; candidate parquets and "
+             "data_inspection.csv are left untouched",
+    )
+    args = parser.parse_args()
 
     report_rows = []
 
@@ -310,6 +351,19 @@ def main():
                 ),
             })
 
+            if args.network_only:
+                geo = build_network_geo(nodes, arcs)
+                geo.to_parquet(
+                    net_dir / f"{tid}.arcs.parquet",
+                    index=False,
+                )
+                print(
+                    f"[preprocess] {partition}/{tid} "
+                    f"network only: {len(geo)} arcs",
+                    flush=True,
+                )
+                continue
+
             track["trip_id"] = tid
 
             candidates, geo = generate_candidates(
@@ -358,6 +412,9 @@ def main():
                 f"{len(geo)} arcs",
                 flush=True,
             )
+
+    if args.network_only:
+        return
 
     # Write inspection report.
     report = pd.DataFrame(report_rows)
