@@ -110,9 +110,9 @@ function drawRoute(data) {
       style: { color: "#087760", weight: 4, opacity: 0.8 },
     });
   }
-  const connected = data.route_completeness === "connected" && data.connected_geometry;
+  const connected = data.connected_geometry;
   if (connected) {
-    overlays["Connected route"] = L.geoJSON(connected, { style: { color: "#7a3cb1", weight: 5, dashArray: "8 5" } });
+    overlays["Reconstructed road path"] = L.geoJSON(connected, { style: { color: "#7a3cb1", weight: 6 } });
   }
   displayedLayers = Object.values(overlays);
   if (displayedLayers.length) {
@@ -140,7 +140,7 @@ function showResults(data) {
   ];
   if (!demo) {
     const geometry = data.geometry;
-    const completeness = { candidate_only: "Candidate sequence", partial: "Partial candidate sequence",
+    const completeness = { candidate_only: "Candidate sequence", partial: "Partial route",
       connected: "Connected route", unavailable: "Unavailable" };
     const decoder = { directed_road_network: "Viterbi · directed road distances",
       classifier_only: "Classifier only", neutral: "Viterbi · equal costs" };
@@ -154,6 +154,9 @@ function showResults(data) {
       ["Decoder", decoder[data.transition_model] ?? "N/A"],
       ["Route status", completeness[data.route_completeness] ?? "N/A"],
       ["Disconnected transitions", data.disconnected_transitions ?? "N/A"],
+      ["Connecting arcs", data.reconstructed_connecting_arcs ?? "N/A"],
+      ["Reconstructed distance", Number.isFinite(data.reconstructed_distance_m)
+        ? data.reconstructed_distance_m.toFixed(1) + " m" : "N/A"],
     );
   }
   metrics.replaceChildren();

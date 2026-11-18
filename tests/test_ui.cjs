@@ -143,15 +143,15 @@ test("evaluation renders only genuine road layers and available metrics", async 
   await flush();
   ui.selectTrip("00000007");
   await ui.submit();
-  assert.deepEqual(ui.geojson, [arcs]);
+  assert.deepEqual(ui.geojson, [arcs, arcs]);
   assert.equal(ui.drawn.length, 0);
   assert.equal(ui.element("#legend-gps").hidden, false);
-  assert.equal(ui.element("#legend-connected").hidden, true);
+  assert.equal(ui.element("#legend-connected").hidden, false);
   assert.equal(ui.element("#fit-trip").disabled, false);
   const values = ui.element("#metrics").children.map(element => element.textContent);
   const value = label => values[values.indexOf(label) + 1];
   assert.equal(value("Top-1 accuracy"), "N/A");
   assert.equal(value("Directed-arc overlap (Jaccard)"), "25.0%");
   assert.equal(value("Geometry coverage"), "1 / 2");
-  assert.equal(value("Route status"), "Partial candidate sequence");
+  assert.equal(value("Route status"), "Partial route");
 });

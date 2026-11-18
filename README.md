@@ -158,10 +158,19 @@ Use the `X-Request-ID` header to correlate responses with API logs and the
   reports `transition_model: "directed_road_network"`. If topology or
   projection fractions are unavailable, it reports `"classifier_only"`
   and explains why. `disconnected_transitions` counts selected transitions
-  with no finite directed path. The output is a candidate sequence and
-  `connected_geometry` is null because the graph supplies distances without
-  connecting arc sequences. The UI shows GPS observations and decoded arcs
-  as separate layers. The API returns a Leaflet-compatible
+  with no finite directed path. `connected_geometry` reconstructs directed
+  shortest paths between the selected candidate projections. It contains one
+  LineString per continuous section and leaves gaps where transitions are
+  unreachable. `route_completeness` is `connected` when those sections cover
+  the trip continuously, and `partial` when there are gaps or uncovered
+  endpoints. `reconstructed_connecting_arcs` counts traversals of intermediate
+  arcs, including repeat traversals. `reconstructed_distance_m` sums the
+  verified sections in metres, while `route_distance_m` is populated for
+  a connected trip. Distances use the decoder's graph edge lengths and
+  projection fractions. The network supplies only arc endpoints, so each
+  arc is drawn as a straight segment between its known endpoints or trimmed
+  positions. The UI offers separate GPS, candidate-arc, and reconstructed
+  path layers. The API also returns a Leaflet-compatible
   `geometry.geojson` FeatureCollection with one directed LineString per
   resolved observation, in observation order. Each line uses the from-node
   and to-node of the original zero-based arc ID, in longitude/latitude order.

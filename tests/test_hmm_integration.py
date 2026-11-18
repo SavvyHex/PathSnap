@@ -38,17 +38,17 @@ class HMMIntegrationTests(unittest.TestCase):
     def test_directed_distance_changes_the_selected_arc_and_bridges_candidate_gap(self):
         candidates = ("2,2,12.0,77.001,0,0.9,private,private\n"
                       "2,1,12.0,77.001,0,0.4,private,private\n")
-        route, gps, imputed, mode, disconnected, _ = self.predict(candidates, self.network)
+        route, gps, imputed, mode, disconnected, _, _ = self.predict(candidates, self.network)
         self.assertEqual([point["segment"] for point in route], ["0", "0", "1"])
         self.assertTrue(route[1]["imputed"])
         self.assertEqual([point["obs_id"] for point in gps], [0, 1, 2])
         self.assertEqual((imputed, mode, disconnected), (1, "directed_road_network", 0))
-        independent, _, _, mode, disconnected, _ = self.predict(candidates, None)
+        independent, _, _, mode, disconnected, _, _ = self.predict(candidates, None)
         self.assertEqual(independent[-1]["segment"], "2")
         self.assertEqual((mode, disconnected), ("classifier_only", None))
 
     def test_selected_disconnected_transition_is_explicit(self):
-        _, _, _, mode, disconnected, _ = self.predict(
+        _, _, _, mode, disconnected, _, _ = self.predict(
             "2,2,12.0,77.001,0,0.9,private,private\n", self.network,
         )
         self.assertEqual((mode, disconnected), ("directed_road_network", 1))

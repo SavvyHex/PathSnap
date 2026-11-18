@@ -78,6 +78,7 @@ def predict_route(path, model, columns, beta, network=None):
     observed = [i for i, scores in enumerate(emissions) if scores.size]
     mode = CLASSIFIER_ONLY
     disconnected = None
+    reconstruction_input = None
     limitation = "Directed road topology is unavailable."
     imputed_count = len(observations) - len(observed)
 
@@ -87,9 +88,11 @@ def predict_route(path, model, columns, beta, network=None):
                 or topology.isna().any().any() or (topology < 0).any().any()):
             raise ValueError("Invalid directed road topology")
         if "frac_along" in frame and len(observed) >= 2:
-            sequence, disconnected = decode_road_sequence(observations, emissions, network, beta)
+            sequence, disconnected, reconstruction_input = decode_road_sequence(
+                observations, emissions, network, beta,
+            )
             mode = ROAD_NETWORK
-            limitation = "Member 3's decoder returns distances and candidate states. Connecting arc sequences are unavailable."
+            limitation = None
         else:
             limitation = ("Fewer than two observations have candidates." if len(observed) < 2
                           else "Candidate projection fractions are unavailable.")
@@ -104,7 +107,7 @@ def predict_route(path, model, columns, beta, network=None):
             route.append(dict(obs_id=obs_id, segment=segment, lat=lat, lon=lon, imputed=imputed))
         previous = segment
     gps = [dict(obs_id=obs_id, lat=lat, lon=lon) for obs_id, lat, lon, _ in observations]
-    return route, gps, imputed_count, mode, disconnected, limitation
+    return route, gps, imputed_count, mode, disconnected, limitation, reconstruction_input
 
 
 def decode_road_sequence(observations, emissions, network, beta):
@@ -135,6 +138,6 @@ def decode_road_sequence(observations, emissions, network, beta):
         not np.isfinite(distances[decoded.sequence[start], decoded.sequence[end]])
         for (start, end), distances in matrices.items()
     )
-    return decoded.sequence, int(disconnected)
+    return decoded.sequence, int(disconnected), (graph, decoded.sequence, arc_ids, fractions, matrices)
 
 

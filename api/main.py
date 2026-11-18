@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from api.evaluator_adapter import TRIP_ID, available_trip_files, trip_files
 from api.geometry import geometry_unavailable, index_road_arcs, load_network, resolve_geometry
 from api.inference import MODEL_COLUMNS, load_model, predict_route
+from api.reconstruction import reconstruct_route
 from api.scoring import overlap_unavailable, score_arc_overlap, score_route
 from src.config import ARTIFACTS, DATA_CLEAN, HMM_BETA, REFERENCE
 
@@ -158,6 +159,9 @@ def create_app(settings=None):
                         route_kind="development_preview",
                         gps_observations=[], inference_s=None, connected_geometry=None,
                         route_completeness="unavailable", disconnected_transitions=None,
+                        connected_transitions=None, unreachable_transitions=None,
+                        reconstructed_connecting_arcs=None, reconstructed_distance_m=None,
+                        route_distance_m=None,
                         geometry=dict(geometry_unavailable("development_preview"),
                                       covered_observations=0, decoded_observations=0),
                         route_overlap=overlap_unavailable("development_preview"))
@@ -178,7 +182,7 @@ def create_app(settings=None):
             network_error = True
         try:
             inference_started = time.perf_counter()
-            route, gps, imputed, transition_model, disconnected, limitation = predict_route(
+            route, gps, imputed, transition_model, disconnected, limitation, reconstruction_input = predict_route(
                 path, *app.state.model_bundle, settings.beta, network,
             )
             inference_s = round(time.perf_counter() - inference_started, 3)
@@ -206,13 +210,30 @@ def create_app(settings=None):
         completeness = ("unavailable" if not route else
                         "partial" if disconnected or imputed or geometry["status"] == "partial"
                         else "candidate_only")
+        reconstruction = reconstruct_route(*reconstruction_input) if reconstruction_input else None
+        if reconstruction:
+            if disconnected or reconstruction.geometry_failures or not reconstruction.spans_trip:
+                completeness = "partial"
+                limitation = ("Some selected transitions are unreachable or lack continuous geometry. "
+                              "Only verified road sections are shown.")
+            elif reconstruction.geojson:
+                completeness = "connected"
+            else:
+                limitation = "The selected road positions have no nonzero route geometry."
+        distance = reconstruction.distance_m if reconstruction else None
         return dict(mode=settings.mode, trip_id=trip_id, route=route, n_observations=len(gps),
                     n_imputed=imputed, top1_accuracy=accuracy, scored_observations=scored,
                     elapsed_s=round(time.perf_counter() - started, 3),
                     transition_model=transition_model, route_kind="candidate_sequence",
                     transition_limitation=limitation, disconnected_transitions=disconnected,
                     gps_observations=gps, inference_s=inference_s,
-                    route_completeness=completeness, connected_geometry=None,
+                    route_completeness=completeness,
+                    connected_geometry=reconstruction.geojson if reconstruction else None,
+                    connected_transitions=reconstruction.connected_transitions if reconstruction else None,
+                    unreachable_transitions=reconstruction.unreachable_transitions if reconstruction else None,
+                    reconstructed_connecting_arcs=reconstruction.connecting_arcs if reconstruction else None,
+                    reconstructed_distance_m=distance,
+                    route_distance_m=distance if completeness == "connected" else None,
                     geometry=geometry, route_overlap=overlap)
 
     return app
