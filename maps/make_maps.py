@@ -147,7 +147,9 @@ def main() -> None:
         d = DATA_CLEAN / partition
         if d.exists():
             for path in sorted(d.glob("*.parquet"))[:3]:
+                print(f"[maps] rendering {partition}/{path.stem}", flush=True)
                 made.append(str(trip_map(path.stem, partition)))
+                print(f"[maps] done {partition}/{path.stem}", flush=True)
     print("maps written:", *made, sep="\n  ")
     if (RESULTS / "model_comparison.csv").exists():
         plot_model_comparison()

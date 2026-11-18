@@ -84,6 +84,7 @@ def main() -> None:
     for partition in ("train", "student_test"):
         for path in sorted((DATA_CLEAN / partition).glob("*.parquet")):
             obs = load_trip_obs(path)
+            print(f"[eda] {partition}/{path.stem}: {len(obs)} obs", flush=True)
             span = obs["seconds"].max() - obs["seconds"].min() if "seconds" in obs else None
             rows.append({"trip": path.stem, "partition": partition,
                          "observations": len(obs), "span_s": span,
