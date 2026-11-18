@@ -41,7 +41,7 @@ def compare_trip(df_obs, model, X_cols, beta=HMM_BETA):
     for oid in obs_ids:
         g = df_obs[df_obs["obs_id"] == oid]
         cand_probs.append(g["score"].values)
-        lats.append(g["lat"].iloc[0]); lons.append(g["lon"].iloc[0])
+        lats.append(g["latitude"].iloc[0]); lons.append(g["longitude"].iloc[0])
     gps_dists = [haversine_m(lats[t], lons[t], lats[t + 1], lons[t + 1])
                  for t in range(len(obs_ids) - 1)]
     # Candidate-pair distances need segment geometry; until the road
@@ -67,8 +67,8 @@ def compare_trip(df_obs, model, X_cols, beta=HMM_BETA):
 
 def main() -> None:
     df = pd.read_parquet(RESULTS / "features.parquet")
-    X_cols = [c for c in df.columns
-              if c not in {"label", COL_TRIP, "obs_id", "partition"} and df[c].dtype != object]
+    import json
+    X_cols = json.loads((ARTIFACTS / "feature_columns.json").read_text())
     model = joblib.load(ARTIFACTS / "model_tuned.joblib")
     rows = []
     test = df[df["partition"] == "student_test"]
