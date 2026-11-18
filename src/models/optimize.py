@@ -1,0 +1,83 @@
+"""Bayesian hyperparameter optimisation of the selected model.
+
+Optuna TPE search with group-aware cross-validation (GroupKFold on
+trip_id) over the training trips only; the best configuration is then
+refit on all training trips and evaluated once on the student-testing
+trips, alongside the untuned baseline, for the tuned-vs-untuned table.
+
+Trials are logged to results/optuna_trials.csv for the report.
+"""
+import json
+import time
+
+import joblib
+import numpy as np
+import optuna
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import f1_score
+from sklearn.model_selection import GroupKFold
+
+from src.config import ARTIFACTS, RESULTS, RANDOM_SEED, N_CV_FOLDS, COL_TRIP
+from src.models.train_zoo import MODELS, evaluate
+
+SELECTED = "rf"          # set after inspecting model_comparison.csv
+N_TRIALS = 40
+
+
+def objective(trial, train, X_cols):
+    params = {
+        "n_estimators": trial.suggest_int("n_estimators", 100, 500),
+        "max_depth": trial.suggest_int("max_depth", 4, 24),
+        "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 10),
+        "max_features": trial.suggest_float("max_features", 0.3, 1.0),
+        "class_weight": trial.suggest_categorical("class_weight", [None, "balanced"]),
+    }
+    gkf = GroupKFold(n_splits=N_CV_FOLDS)
+    scores = []
+    for tr_idx, va_idx in gkf.split(train, train["label"], groups=train[COL_TRIP]):
+        m = RandomForestClassifier(random_state=RANDOM_SEED, n_jobs=-1, **params)
+        m.fit(train.iloc[tr_idx][X_cols], train.iloc[tr_idx]["label"])
+        proba = m.predict_proba(train.iloc[va_idx][X_cols])[:, 1]
+        scores.append(f1_score(train.iloc[va_idx]["label"],
+                               (proba >= 0.5).astype(int), average="macro"))
+    return float(np.mean(scores))
+
+
+def main() -> None:
+    df = pd.read_parquet(RESULTS / "features.parquet")
+    X_cols = [c for c in df.columns
+              if c not in {"label", COL_TRIP, "obs_id", "partition"} and df[c].dtype != object]
+    train = df[df["partition"] == "train"].reset_index(drop=True)
+    test = df[df["partition"] == "student_test"].reset_index(drop=True)
+
+    t0 = time.perf_counter()
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=RANDOM_SEED))
+    study.optimize(lambda t: objective(t, train, X_cols), n_trials=N_TRIALS)
+    opt_minutes = (time.perf_counter() - t0) / 60
+
+    trials = study.trials_dataframe()
+    trials.to_csv(RESULTS / "optuna_trials.csv", index=False)
+
+    best = study.best_params
+    tuned = RandomForestClassifier(random_state=RANDOM_SEED, n_jobs=-1, **best)
+    tuned.fit(train[X_cols], train["label"])
+    joblib.dump(tuned, ARTIFACTS / "model_tuned.joblib")
+    (ARTIFACTS / "tuned_params.json").write_text(json.dumps(best, indent=2))
+
+    untuned = joblib.load(ARTIFACTS / f"model_{SELECTED}.joblib")
+    comp = pd.DataFrame([
+        {"variant": "untuned", **evaluate(test, untuned, X_cols)},
+        {"variant": "tuned", **evaluate(test, tuned, X_cols)},
+    ])
+    comp["cv_macro_f1_tuned"] = study.best_value
+    comp["optimisation_minutes"] = round(opt_minutes, 2)
+    comp.to_csv(RESULTS / "tuned_vs_untuned.csv", index=False)
+    print(comp.to_string(index=False))
+    print("best params:", best)
+
+
+if __name__ == "__main__":
+    main()

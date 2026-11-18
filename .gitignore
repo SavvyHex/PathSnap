@@ -1,2 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+data/raw/
+data/clean/
+api/reference/
 train/
 student_test/
+Archive.zip
+results/*.png
+.DS_Store

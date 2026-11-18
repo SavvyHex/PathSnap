@@ -1,0 +1,134 @@
+"""Model zoo: train >=5 algorithm families and compare them honestly.
+
+Design rules baked in (per the hackathon brief):
+- cross-validation is group-aware: GroupKFold on trip_id, so
+  observations of one trip never straddle train/validation folds;
+- the student-testing partition is used for development comparisons
+  only, never for fitting;
+- every run logs configuration, timings and metrics to CSV.
+
+Each observation is scored per candidate (binary: candidate is the
+reference segment or not); Top-1 prediction = argmax over candidate
+scores of one observation. Macro F1 and log loss are computed on the
+binary candidate labels; route continuity is handled by the HMM stage.
+"""
+import json
+import time
+from pathlib import Path
+
+import joblib
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score, f1_score, log_loss, precision_score, recall_score,
+)
+from sklearn.model_selection import GroupKFold
+from sklearn.naive_bayes import GaussianNB
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.tree import DecisionTreeClassifier
+
+from src.config import ARTIFACTS, RESULTS, RANDOM_SEED, N_CV_FOLDS, COL_TRIP
+
+FEATURES_PATH = RESULTS / "features.parquet"   # produced by src.features
+EXCLUDE = {"label", COL_TRIP, "obs_id"}
+
+MODELS = {
+    # name -> (family, estimator, config string for the report)
+    "logreg": ("linear/probabilistic",
+               Pipeline([("sc", StandardScaler()),
+                         ("clf", LogisticRegression(max_iter=2000, random_state=RANDOM_SEED))]),
+               "L2 logistic regression, C=1.0, lbfgs"),
+    "gnb": ("linear/probabilistic",
+            GaussianNB(),
+            "Gaussian Naive Bayes, default priors"),
+    "knn": ("instance-based",
+            Pipeline([("sc", StandardScaler()),
+                      ("clf", KNeighborsClassifier(n_neighbors=15, weights="distance"))]),
+            "distance-weighted KNN, k=15"),
+    "dtree": ("tree-based",
+              DecisionTreeClassifier(max_depth=12, random_state=RANDOM_SEED),
+              "CART decision tree, max_depth=12"),
+    "rf": ("ensemble",
+           RandomForestClassifier(n_estimators=200, n_jobs=-1, random_state=RANDOM_SEED),
+           "random forest, 200 trees"),
+    "et": ("ensemble",
+           ExtraTreesClassifier(n_estimators=200, n_jobs=-1, random_state=RANDOM_SEED),
+           "extra trees, 200 trees"),
+    "mlp": ("neural network",
+            Pipeline([("sc", StandardScaler()),
+                      ("clf", MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=500,
+                                            random_state=RANDOM_SEED))]),
+            "MLP 64-32, ReLU, Adam"),
+}
+
+
+def top1_accuracy(df: pd.DataFrame, scores: np.ndarray) -> float:
+    """Per-observation: highest-scoring candidate vs reference label."""
+    tmp = df[["obs_id", "label"]].copy()
+    tmp["score"] = scores
+    best = tmp.loc[tmp.groupby("obs_id")["score"].idxmax()]
+    return float((best["label"] == 1).mean())
+
+
+def candidate_miss_rate(df: pd.DataFrame) -> float:
+    per_obs = df.groupby("obs_id")["label"].max()
+    return float((per_obs == 0).mean())
+
+
+def evaluate(df, model, X_cols):
+    t0 = time.perf_counter()
+    proba = model.predict_proba(df[X_cols])[:, 1]
+    infer_s = time.perf_counter() - t0
+    pred = (proba >= 0.5).astype(int)
+    y = df["label"].values
+    return {
+        "top1_accuracy": top1_accuracy(df, proba),
+        "macro_f1": f1_score(y, pred, average="macro"),
+        "precision": precision_score(y, pred, zero_division=0),
+        "recall": recall_score(y, pred, zero_division=0),
+        "log_loss": log_loss(y, np.c_[1 - proba, proba], labels=[0, 1]),
+        "candidate_miss_rate": candidate_miss_rate(df),
+        "inference_s": round(infer_s, 4),
+    }
+
+
+def main() -> None:
+    df = pd.read_parquet(FEATURES_PATH)
+    X_cols = [c for c in df.columns if c not in EXCLUDE and df[c].dtype != object]
+    train = df[df["partition"] == "train"].reset_index(drop=True)
+    test = df[df["partition"] == "student_test"].reset_index(drop=True)
+    X_cols = [c for c in X_cols if c != "partition"]
+
+    gkf = GroupKFold(n_splits=N_CV_FOLDS)
+    rows = []
+    for name, (family, model, cfg) in MODELS.items():
+        cv_f1 = []
+        for tr_idx, va_idx in gkf.split(train, train["label"], groups=train[COL_TRIP]):
+            m = model
+            m.fit(train.iloc[tr_idx][X_cols], train.iloc[tr_idx]["label"])
+            proba = m.predict_proba(train.iloc[va_idx][X_cols])[:, 1]
+            cv_f1.append(f1_score(train.iloc[va_idx]["label"],
+                                  (proba >= 0.5).astype(int), average="macro"))
+        t0 = time.perf_counter()
+        model.fit(train[X_cols], train["label"])
+        train_s = time.perf_counter() - t0
+        metrics = evaluate(test, model, X_cols)
+        rows.append({"model": name, "family": family, "config": cfg,
+                     "cv_macro_f1_mean": np.mean(cv_f1), "cv_macro_f1_std": np.std(cv_f1),
+                     "train_s": round(train_s, 3), **metrics})
+        joblib.dump(model, ARTIFACTS / f"model_{name}.joblib")
+        print(name, rows[-1])
+
+    out = pd.DataFrame(rows).sort_values("macro_f1", ascending=False)
+    out.to_csv(RESULTS / "model_comparison.csv", index=False)
+    (ARTIFACTS / "feature_columns.json").write_text(json.dumps(X_cols))
+    print("\n" + out.to_string(index=False))
+
+
+if __name__ == "__main__":
+    main()

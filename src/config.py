@@ -1,0 +1,48 @@
+"""Central configuration.
+
+Dataset layout (confirmed with the team, member 1):
+  data/raw/train/00000001/00000001.{arcs,nodes,route,track}   (trips 1-99 minus test ids)
+  data/raw/student_test/00000000/00000000.{arcs,nodes,route,track}
+
+Per trip:
+  .track  GPS observations (the trajectory)
+  .nodes  road-network nodes
+  .arcs   road-network arcs (directed segments between nodes)
+  .route  reference matched route (ground truth, train/student-test only)
+
+Column semantics below are best guesses for these file formats and are
+verified/adjusted by src/data/preprocess.py's sniffing on first run.
+"""
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+DATA_RAW = ROOT / "data" / "raw"
+DATA_CLEAN = ROOT / "data" / "clean"
+RESULTS = ROOT / "results"
+MAPS_DIR = ROOT / "maps"
+ARTIFACTS = ROOT / "artifacts"
+REFERENCE = ROOT / "api" / "reference"   # server-side ground truth, never shipped to UI
+
+for _d in (DATA_RAW, DATA_CLEAN, RESULTS, MAPS_DIR, ARTIFACTS, REFERENCE):
+    _d.mkdir(parents=True, exist_ok=True)
+
+TRAIN_DIR = DATA_RAW / "train"
+TEST_DIR = DATA_RAW / "student_test"
+
+TEST_TRIPS = [
+    "00000000", "00000007", "00000009", "00000040", "00000052",
+    "00000056", "00000065", "00000076", "00000077", "00000091",
+]
+# trips 1-99 excluding the ten test ids
+TRAIN_TRIPS = sorted({f"{i:08d}" for i in range(1, 100)} - set(TEST_TRIPS))
+
+# candidate generation
+N_CANDIDATES = 5            # nearest arcs kept per GPS observation
+CANDIDATE_MAX_DIST_M = 100  # drop candidates beyond this distance
+
+RANDOM_SEED = 42
+N_CV_FOLDS = 5
+
+# HMM defaults (tuned later on train + student-test only)
+HMM_BETA = 30.0    # transition scale metres
+HMM_EPS = 1e-6     # floor probability for disconnected transitions
