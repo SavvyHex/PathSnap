@@ -77,6 +77,8 @@ def generate_candidates(track, nodes, arcs):
     a = arcs[valid]
     geo = pd.DataFrame({
         "arc_id": a["arc_id"].values,
+        "from_node": a["from_node"].values,
+        "to_node": a["to_node"].values,
         "from_lat": node_xy.loc[a["from_node"], "latitude"].values,
         "from_lon": node_xy.loc[a["from_node"], "longitude"].values,
         "to_lat": node_xy.loc[a["to_node"], "latitude"].values,

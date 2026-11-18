@@ -9,9 +9,9 @@ distance (Newson & Krumm style). A small floor probability keeps
 disconnected-but-correct transitions reachable.
 
 Edge cases:
-- observation with no candidates: the state column is skipped, the
-  decoder bridges across the gap, and the observation inherits the
-  previous decoded segment (reported as imputed);
+- observation with no candidates: the state column is skipped and the
+  decoder bridges across the gap; the step is marked imputed and has no
+  candidate-local state index;
 - large GPS gaps: the transition penalty saturates, so emissions
   dominate - the decoder degrades gracefully to classifier-only;
 - disconnected consecutive segments: allowed at a heavy but finite
@@ -32,7 +32,10 @@ class DecodeResult:
 
 
 def _log(p):
-    return np.log(max(float(p), HMM_EPS))
+    value = float(p)
+    if not np.isfinite(value):
+        value = HMM_EPS
+    return np.log(max(value, HMM_EPS))
 
 
 def viterbi(candidate_probs, gps_dists, cand_dist_fn, beta: float = HMM_BETA) -> DecodeResult:
@@ -45,6 +48,8 @@ def viterbi(candidate_probs, gps_dists, cand_dist_fn, beta: float = HMM_BETA) ->
     T = len(candidate_probs)
     if T == 0:
         return DecodeResult([], [], 0.0)
+    if len(gps_dists) != max(0, T - 1):
+        raise ValueError("gps_dists must contain one distance for each adjacent observation pair")
 
     valid = [t for t in range(T) if len(candidate_probs[t]) > 0]
     imputed = [t for t in range(T) if len(candidate_probs[t]) == 0]
@@ -58,9 +63,14 @@ def viterbi(candidate_probs, gps_dists, cand_dist_fn, beta: float = HMM_BETA) ->
     for k in range(1, len(valid)):
         t_prev, t = valid[k - 1], valid[k]
         emit = np.array([_log(p) for p in candidate_probs[t]])
-        gps_gap = float(sum(gps_dists[t_prev:t]))
+        gps_gap = float(np.nansum(gps_dists[t_prev:t]))
+        gps_gap = max(gps_gap, 0.0)
         C = np.asarray(cand_dist_fn(t_prev, t), dtype=float)
-        C = np.where(np.isinf(C), gps_gap + 10 * beta, C)  # disconnected: heavy finite cost
+        expected_shape = (len(candidate_probs[t_prev]), len(candidate_probs[t]))
+        if C.shape != expected_shape:
+            raise ValueError(f"candidate distance matrix has shape {C.shape}; expected {expected_shape}")
+        C = np.where(~np.isfinite(C), gps_gap + 10 * beta, C)  # disconnected: heavy finite cost
+        C = np.maximum(C, 0.0)
         trans = -np.abs(gps_gap - C) / max(beta, 1e-9)
         scores = deltas[-1][:, None] + trans
         psis.append(np.argmax(scores, axis=0))
@@ -74,7 +84,8 @@ def viterbi(candidate_probs, gps_dists, cand_dist_fn, beta: float = HMM_BETA) ->
     sequence = [-1] * T
     for k, t in enumerate(valid):
         sequence[t] = int(back[k])
-    for t in imputed:
-        sequence[t] = sequence[t - 1] if t > 0 else -1
+    # Candidate indices are local to each observation, so an imputed step
+    # cannot safely reuse the prior state's index. Keep it as -1 and report
+    # the observation in DecodeResult.imputed.
 
     return DecodeResult(sequence, imputed, float(np.max(deltas[-1])))
