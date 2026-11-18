@@ -49,5 +49,8 @@ N_CV_FOLDS = 5
 COL_TRIP = "trip_id"
 
 # HMM defaults (tuned later on train + student-test only)
-HMM_BETA = 30.0    # transition scale metres
+# 75.0 selected by the recorded training-trip sweep in results/hmm_beta_tuning.csv
+# (5-fold over 80 train trips, beta in {10,20,30,50,75,100}: mean proxy accuracy
+# 0.778@10 -> 0.802@75, flat at 100). Confirm once on student-test before quoting.
+HMM_BETA = 75.0    # transition scale metres
 HMM_EPS = 1e-6     # floor probability for disconnected transitions
