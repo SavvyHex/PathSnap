@@ -5,7 +5,6 @@ Hidden states are candidate road arcs for each GPS observation.
 Emissions are classifier probabilities.
 Transitions use road-network distances between candidate positions.
 
-<<<<<<< Updated upstream
 Edge cases:
 - observation with no candidates: the state column is skipped and the
   decoder bridges across the gap; the step is marked imputed and has no
@@ -14,11 +13,6 @@ Edge cases:
   dominate - the decoder degrades gracefully to classifier-only;
 - disconnected consecutive segments: allowed at a heavy but finite
   cost, so one bad candidate set cannot derail the whole route.
-=======
-Observations with no candidates are skipped during decoding and
-remain -1 in the returned sequence. They are never assigned a
-candidate index belonging to a different observation.
->>>>>>> Stashed changes
 """
 
 from dataclasses import dataclass
@@ -108,7 +102,6 @@ def viterbi(
 
     # Forward pass.
     for k in range(1, len(valid)):
-<<<<<<< Updated upstream
         t_prev, t = valid[k - 1], valid[k]
         emit = np.array([_log(p) for p in candidate_probs[t]])
         gps_gap = float(np.nansum(gps_dists[t_prev:t]))
@@ -120,53 +113,6 @@ def viterbi(
         C = np.where(~np.isfinite(C), gps_gap + 10 * beta, C)  # disconnected: heavy finite cost
         C = np.maximum(C, 0.0)
         trans = -np.abs(gps_gap - C) / max(beta, 1e-9)
-=======
-        t_prev = valid[k - 1]
-        t = valid[k]
-
-        emit = np.array(
-            [_log(p) for p in candidate_probs[t]],
-            dtype=float,
-        )
-
-        # Sum GPS displacement across skipped observations.
-        gps_gap = float(sum(gps_dists[t_prev:t]))
-
-        C = np.asarray(
-            cand_dist_fn(t_prev, t),
-            dtype=float,
-        )
-
-        expected_shape = (
-            len(candidate_probs[t_prev]),
-            len(candidate_probs[t]),
-        )
-
-        if C.shape != expected_shape:
-            raise ValueError(
-                f"Candidate distance matrix has shape {C.shape}; "
-                f"expected {expected_shape} for observations "
-                f"{t_prev} -> {t}."
-            )
-
-        if np.isnan(C).any():
-            raise ValueError(
-                "Candidate distance matrix contains NaN values."
-            )
-
-        # Disconnected pairs receive a finite but heavy penalty.
-        C = np.where(
-            np.isinf(C),
-            gps_gap + 10.0 * beta,
-            C,
-        )
-
-        trans = (
-            -np.abs(gps_gap - C)
-            / max(beta, 1e-9)
-        )
-
->>>>>>> Stashed changes
         scores = deltas[-1][:, None] + trans
 
         psis.append(
@@ -195,12 +141,9 @@ def viterbi(
 
     for k, t in enumerate(valid):
         sequence[t] = int(back[k])
-<<<<<<< Updated upstream
     # Candidate indices are local to each observation, so an imputed step
     # cannot safely reuse the prior state's index. Keep it as -1 and report
     # the observation in DecodeResult.imputed.
-=======
->>>>>>> Stashed changes
 
     return DecodeResult(
         sequence=sequence,

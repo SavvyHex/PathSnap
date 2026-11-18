@@ -178,7 +178,6 @@ def generate_candidates(track, nodes, arcs):
         "arc_id": a["arc_id"].values,
         "from_node": a["from_node"].values,
         "to_node": a["to_node"].values,
-<<<<<<< Updated upstream
         "from_lat": node_xy.loc[a["from_node"], "latitude"].values,
         "from_lon": node_xy.loc[a["from_node"], "longitude"].values,
         "to_lat": node_xy.loc[a["to_node"], "latitude"].values,
@@ -220,87 +219,6 @@ def generate_candidates(track, nodes, arcs):
             frame["frac_along"] = frac[row,col]
             frames.append(frame)
     return pd.concat(frames,ignore_index=True).sort_values(["obs_id","obs_rank"]).reset_index(drop=True), geo
-=======
-
-        "from_lat": node_xy.loc[
-            a["from_node"], "latitude"
-        ].values,
-
-        "from_lon": node_xy.loc[
-            a["from_node"], "longitude"
-        ].values,
-
-        "to_lat": node_xy.loc[
-            a["to_node"], "latitude"
-        ].values,
-
-        "to_lon": node_xy.loc[
-            a["to_node"], "longitude"
-        ].values,
-    })
-
-    # Calculate geodesic length of each directed arc.
-    geo["length_m"] = haversine_m(
-        geo["from_lat"].values,
-        geo["from_lon"].values,
-        geo["to_lat"].values,
-        geo["to_lon"].values,
-    )
-
-    cand_rows = []
-
-    lats = track["latitude"].values
-    lons = track["longitude"].values
-    oids = track["obs_id"].values
-
-    # Generate candidates independently for every GPS observation.
-    for i in range(len(track)):
-
-        dist, plat, plon, frac = point_to_segment_m(
-            lats[i],
-            lons[i],
-            geo["from_lat"].values,
-            geo["from_lon"].values,
-            geo["to_lat"].values,
-            geo["to_lon"].values,
-        )
-
-        order = np.argsort(dist)[:N_CANDIDATES]
-
-        for rank, j in enumerate(order):
-
-            if dist[j] <= CANDIDATE_MAX_DIST_M:
-
-                cand_rows.append({
-                    "trip_id": (
-                        track["trip_id"].iloc[0]
-                        if "trip_id" in track
-                        else None
-                    ),
-
-                    "obs_id": int(oids[i]),
-                    "obs_rank": rank,
-
-                    "latitude": lats[i],
-                    "longitude": lons[i],
-                    "seconds": track["seconds"].iloc[i],
-
-                    "candidate_id": int(
-                        geo["arc_id"].iloc[j]
-                    ),
-
-                    "dist_to_segment_m": float(dist[j]),
-
-                    "proj_lat": float(plat[j]),
-                    "proj_lon": float(plon[j]),
-
-                    "frac_along": float(frac[j]),
-                })
-
-    candidates = pd.DataFrame(cand_rows)
-
-    return candidates, geo
->>>>>>> Stashed changes
 
 
 def main():
@@ -326,7 +244,6 @@ def main():
 
         out_dir.mkdir(parents=True, exist_ok=True)
         net_dir.mkdir(parents=True, exist_ok=True)
-<<<<<<< Updated upstream
         present = sorted(p.name for p in base.iterdir() if p.is_dir())
         if partition == "train":
             # the brief fixes the train set at 80 trips; the exact ids are
@@ -346,18 +263,6 @@ def main():
             folder = base / tid
             print(f"[preprocess] {partition}/{tid} ...", flush=True)
             tid, track, nodes, arcs, route_ids = parse_trip(folder)
-=======
-
-        present = {
-            p.name for p in base.iterdir() if p.is_dir()
-        }
-
-        expected = set(trips)
-
-        # Record unexpected folders without processing them.
-        for extra in sorted(present - expected):
-
->>>>>>> Stashed changes
             report_rows.append({
                 "trip": extra,
                 "partition": partition,
