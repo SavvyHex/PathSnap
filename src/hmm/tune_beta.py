@@ -120,9 +120,13 @@ def evaluate_trip(df_trip, model, feature_columns, betas, fold):
         key = (t_from, t_to)
 
         if key not in distance_matrix_cache:
-            distance_matrix_cache[key] = road_graph.distance_matrix(
-                candidate_positions[t_from],
-                candidate_positions[t_to],
+            from_ids, from_fracs = zip(*candidate_positions[t_from])
+            to_ids, to_fracs = zip(*candidate_positions[t_to])
+            distance_matrix_cache[key] = road_graph.transition_distances(
+                from_ids,
+                from_fracs,
+                to_ids,
+                to_fracs,
             )
 
         return distance_matrix_cache[key]
