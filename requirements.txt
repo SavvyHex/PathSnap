@@ -3,6 +3,7 @@ pandas>=2.2
 scikit-learn>=1.5
 scipy>=1.13
 joblib>=1.4
+pyarrow>=15
 matplotlib>=3.8
 seaborn>=0.13
 folium>=0.16
