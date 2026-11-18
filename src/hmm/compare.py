@@ -74,7 +74,7 @@ def compare_trip(candidates, track, model, X_cols, graph, beta=HMM_BETA):
     }
 
 
-MODEL_CHOICES = ("tuned", "gnb", "logreg", "rf", "et", "dtree")
+MODEL_CHOICES = ("tuned", "gnb", "logreg", "rf", "et", "dtree", "hgb")
 
 # The committed results/hmm_vs_classifier.csv was recorded with the tuned model
 # at beta 30; only that exact combination keeps the legacy filename so the
@@ -104,7 +104,9 @@ def main() -> None:
         raise SystemExit("--beta must be finite and positive")
 
     df = pd.read_parquet(RESULTS / "features.parquet")
-    X_cols = json.loads((ARTIFACTS / "feature_columns.json").read_text())
+    per_model = ARTIFACTS / f"feature_columns_{args.model}.json"
+    X_cols = json.loads((per_model if per_model.exists()
+                         else ARTIFACTS / "feature_columns.json").read_text())
     model = joblib.load(ARTIFACTS / f"model_{args.model}.joblib")
     test = df[df["partition"] == "student_test"]
     rows = []
