@@ -1,22 +1,20 @@
 """Feature engineering for (GPS observation, candidate segment) pairs.
 
 The classifier scores each candidate of each observation; the label is
-1 for the candidate whose segment id equals the reference matched
-segment, else 0. Per-observation Top-1 prediction = highest scoring
-candidate.
+1 for the candidate nearest to the observation among those on the
+reference route, else 0 (see src/data/preprocess.py for the labelling
+rule and its caveat). Per-observation Top-1 prediction = highest
+scoring candidate.
 
-Provided candidate attributes (distance to segment, bearing difference
-...) are passed through; motion features (speed, acceleration, turning
-angle) are derived from the GPS trace itself. Adjust to the real
-columns once the schema is confirmed.
+Candidate attributes from preprocessing (distance to segment,
+projection fraction) are passed through; motion features (speed,
+acceleration, turning angle) are derived from the GPS trace using the
+real .track seconds column.
 """
 import numpy as np
 import pandas as pd
 
-from src.config import (
-    DATA_CLEAN, RESULTS,
-    COL_TRIP, COL_TIME, COL_LAT, COL_LON, COL_CAND, COL_LABEL,
-)
+from src.config import DATA_CLEAN, RESULTS
 
 EARTH_R = 6_371_000.0
 
@@ -32,13 +30,14 @@ def haversine_m(lat1, lon1, lat2, lon2):
 def motion_features(obs: pd.DataFrame) -> pd.DataFrame:
     """Speed / acceleration / turning angle per observation.
 
-    .track files carry an observation order; if no usable timestamp is
-    present the caller passes a RangeIndex so dt=1 everywhere and speed
-    is expressed in metres-per-sample (documented in the report).
+    Uses the .track seconds column when present (real sampling rate);
+    falls back to observation order (uniform-time proxy, documented).
     """
     out = pd.DataFrame(index=obs.index)
-    ts = pd.to_numeric(pd.to_datetime(obs["timestamp"], errors="coerce"), errors="coerce")
-    dt = pd.Series(ts).diff().fillna(1.0).replace(0, np.nan).fillna(1.0)
+    if "seconds" in obs.columns:
+        dt = obs["seconds"].diff().replace(0, np.nan).fillna(1.0)
+    else:
+        dt = pd.Series(1.0, index=obs.index)
     dist = haversine_m(obs["latitude"].shift(), obs["longitude"].shift(),
                        obs["latitude"], obs["longitude"]).fillna(0.0)
     out["speed_mps"] = (dist / dt).clip(0, 80)
@@ -48,16 +47,6 @@ def motion_features(obs: pd.DataFrame) -> pd.DataFrame:
     bearing = np.degrees(np.arctan2(dlon, dlat))
     out["turning_angle_deg"] = bearing.diff().abs().clip(0, 180).fillna(0.0)
     return out.fillna(0.0)
-
-
-def build_trip(obs: pd.DataFrame, cand: pd.DataFrame) -> pd.DataFrame:
-    """Join candidates with motion features and the binary label."""
-    df = cand.copy()
-    for col in ("speed_mps", "accel_mps2", "turning_angle_deg"):
-        df[col] = obs[col].reindex(df.index).values if col in obs else 0.0
-    if COL_LABEL in obs.columns:
-        df["label"] = (df[COL_CAND] == obs[COL_LABEL].reindex(df.index).values).astype(int)
-    return df
 
 
 def main() -> None:
@@ -70,9 +59,8 @@ def main() -> None:
             df["partition"] = partition
             # motion features from the observation sequence of this trip
             obs = (df.drop_duplicates("obs_id")
-                     .sort_values("obs_id")[["obs_id", "latitude", "longitude"]]
+                     .sort_values("obs_id")[["obs_id", "latitude", "longitude", "seconds"]]
                      .reset_index(drop=True))
-            obs["timestamp"] = pd.RangeIndex(len(obs))  # uniform sampling proxy
             mf = motion_features(obs)
             mf["obs_id"] = obs["obs_id"].values
             df = df.merge(mf, on="obs_id", how="left")

@@ -46,6 +46,8 @@ CANDIDATE_MAX_DIST_M = 100  # drop candidates beyond this distance
 RANDOM_SEED = 42
 N_CV_FOLDS = 5
 
+COL_TRIP = "trip_id"
+
 # HMM defaults (tuned later on train + student-test only)
 HMM_BETA = 30.0    # transition scale metres
 HMM_EPS = 1e-6     # floor probability for disconnected transitions
