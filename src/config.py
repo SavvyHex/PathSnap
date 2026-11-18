@@ -37,7 +37,7 @@ TEST_TRIPS = [
     "00000056", "00000065", "00000076", "00000077", "00000091",
 ]
 # trips 1-99 excluding the ten test ids
-TRAIN_TRIPS = sorted({f"{i:08d}" for i in range(1, 100)} - set(TEST_TRIPS))
+TRAIN_TRIPS = sorted(p.name for p in TRAIN_DIR.glob("[0-9]*") if p.is_dir() and p.name not in TEST_TRIPS)
 
 # candidate generation
 N_CANDIDATES = 5            # nearest arcs kept per GPS observation
