@@ -1,0 +1,2 @@
+trip,n_obs,n_eval_obs,clf_correct,hmm_correct,clf_proxy_accuracy,hmm_proxy_accuracy,decoded_observations,coverage,n_transitions,connected_transitions,continuity_rate,n_imputed,log_probability
+00000052,262,262,212,258,0.8091603053435115,0.9847328244274809,262,1.0,261,261,1.0,0,-124.16616641205573
