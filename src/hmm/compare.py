@@ -1,17 +1,32 @@
+<<<<<<< Updated upstream
 """Compare classifier-only and road-network HMM route reconstruction."""
 import json
 
+=======
+
+"""Compare classifier-only predictions with road-network HMM decoding."""
+
+import argparse
+import json
+from pathlib import Path
+
+>>>>>>> Stashed changes
 import joblib
 import numpy as np
 import pandas as pd
 
+<<<<<<< Updated upstream
 from src.config import ARTIFACTS, DATA_CLEAN, RESULTS, TEST_DIR, HMM_BETA, COL_TRIP
 from src.data.preprocess import parse_trip
+=======
+from src.config import ARTIFACTS, RESULTS, COL_TRIP, HMM_BETA
+>>>>>>> Stashed changes
 from src.features.build_features import haversine_m
 from src.hmm.road_graph import RoadGraph
 from src.hmm.viterbi import viterbi
 
 
+<<<<<<< Updated upstream
 def _route_continuity(states, positions, arc_ids, fracs, gps_dists, graph, beta):
     """Fraction of decoded consecutive observations with feasible road paths."""
     pairs = [(t, int(state)) for t, state in enumerate(states) if state >= 0]
@@ -107,7 +122,400 @@ def main() -> None:
     RESULTS.mkdir(parents=True, exist_ok=True)
     out.to_csv(RESULTS / "hmm_vs_classifier.csv", index=False)
     print(out.to_string(index=False))
+=======
+FEATURES_PATH = RESULTS / "features.parquet"
+MODEL_PATH = ARTIFACTS / "model_tuned.joblib"
+FEATURE_COLUMNS_PATH = ARTIFACTS / "feature_columns.json"
+
+NETWORK_DIR = Path("data/clean/network")
+
+
+def compare_trip(df_obs, model, X_cols, beta=HMM_BETA):
+    """Evaluate one trip using classifier-only and HMM predictions."""
+
+    df_obs = df_obs.copy()
+
+    df_obs["obs_id"] = df_obs["obs_id"].astype(int)
+
+    # Preserve candidate ordering within each GPS observation.
+    df_obs = df_obs.sort_values(
+        ["obs_id", "obs_rank"]
+    ).reset_index(drop=True)
+
+    # Get probability of class 1 from the trained classifier.
+    positive_class_index = list(model.classes_).index(1)
+
+    probabilities = model.predict_proba(
+        df_obs[X_cols]
+    )[:, positive_class_index]
+
+    df_obs["score"] = probabilities
+
+    # Group candidates by GPS observation.
+    groups = [
+        (int(obs_id), group.reset_index(drop=True))
+        for obs_id, group in df_obs.groupby("obs_id", sort=True)
+    ]
+
+    obs_ids = [item[0] for item in groups]
+    candidate_groups = [item[1] for item in groups]
+
+    n_obs = len(groups)
+
+    # ---------------------------------------------------------
+    # 1. Classifier-only prediction
+    # ---------------------------------------------------------
+
+    classifier_correct = 0
+    evaluation_observations = 0
+
+    for group in candidate_groups:
+
+        # Evaluate only observations with at least one positive
+        # proxy label.
+        if not (group["label"] == 1).any():
+            continue
+
+        evaluation_observations += 1
+
+        best_index = group["score"].idxmax()
+
+        predicted_label = int(
+            group.loc[best_index, "label"]
+        )
+
+        classifier_correct += int(predicted_label == 1)
+
+    classifier_accuracy = (
+        classifier_correct / evaluation_observations
+        if evaluation_observations
+        else float("nan")
+    )
+
+    # ---------------------------------------------------------
+    # 2. Load this trip's directed road network
+    # ---------------------------------------------------------
+
+    trip_id = str(df_obs[COL_TRIP].iloc[0]).zfill(8)
+
+    network_path = (
+        NETWORK_DIR / f"{trip_id}.arcs.parquet"
+    )
+
+    if not network_path.exists():
+        raise FileNotFoundError(
+            f"Road network not found: {network_path}"
+        )
+
+    network_df = pd.read_parquet(network_path)
+
+    road_graph = RoadGraph(network_df)
+
+    # ---------------------------------------------------------
+    # 3. Prepare HMM emissions and candidate positions
+    # ---------------------------------------------------------
+
+    candidate_probs = []
+    candidate_positions = []
+
+    latitudes = []
+    longitudes = []
+
+    for group in candidate_groups:
+
+        candidate_probs.append(
+            group["score"].to_numpy(dtype=float)
+        )
+
+        positions = list(
+            zip(
+                group["candidate_id"].astype(int),
+                group["frac_along"].astype(float),
+            )
+        )
+
+        candidate_positions.append(positions)
+
+        latitudes.append(
+            float(group["latitude"].iloc[0])
+        )
+
+        longitudes.append(
+            float(group["longitude"].iloc[0])
+        )
+
+    # GPS displacement between consecutive observations.
+    gps_dists = [
+        haversine_m(
+            latitudes[i],
+            longitudes[i],
+            latitudes[i + 1],
+            longitudes[i + 1],
+        )
+        for i in range(n_obs - 1)
+    ]
+
+    # ---------------------------------------------------------
+    # 4. Actual road-network transition distances
+    # ---------------------------------------------------------
+
+    def candidate_distance_function(t_from, t_to):
+
+        return road_graph.distance_matrix(
+            candidate_positions[t_from],
+            candidate_positions[t_to],
+        )
+
+    # ---------------------------------------------------------
+    # 5. Run Viterbi
+    # ---------------------------------------------------------
+
+    result = viterbi(
+        candidate_probs=candidate_probs,
+        gps_dists=gps_dists,
+        cand_dist_fn=candidate_distance_function,
+        beta=beta,
+    )
+
+    # ---------------------------------------------------------
+    # 6. Evaluate HMM predictions
+    # ---------------------------------------------------------
+
+    hmm_correct = 0
+    hmm_evaluated = 0
+    decoded_observations = 0
+
+    selected_candidates = []
+
+    for t, group in enumerate(candidate_groups):
+
+        selected_index = result.sequence[t]
+
+        if selected_index < 0:
+            selected_candidates.append(None)
+            continue
+
+        selected = group.iloc[selected_index]
+
+        selected_candidates.append(
+            (
+                int(selected["candidate_id"]),
+                float(selected["frac_along"]),
+            )
+        )
+
+        decoded_observations += 1
+
+        if (group["label"] == 1).any():
+
+            hmm_evaluated += 1
+
+            hmm_correct += int(
+                int(selected["label"]) == 1
+            )
+
+    hmm_accuracy = (
+        hmm_correct / hmm_evaluated
+        if hmm_evaluated
+        else float("nan")
+    )
+
+    # ---------------------------------------------------------
+    # 7. Directed road-network continuity
+    # ---------------------------------------------------------
+
+    connected_transitions = 0
+    evaluated_transitions = 0
+
+    for i in range(len(selected_candidates) - 1):
+
+        current = selected_candidates[i]
+        following = selected_candidates[i + 1]
+
+        if current is None or following is None:
+            continue
+
+        evaluated_transitions += 1
+
+        distance = road_graph.candidate_distance(
+            current[0],
+            current[1],
+            following[0],
+            following[1],
+        )
+
+        if np.isfinite(distance):
+            connected_transitions += 1
+
+    continuity_rate = (
+        connected_transitions / evaluated_transitions
+        if evaluated_transitions
+        else float("nan")
+    )
+
+    return {
+        "trip": trip_id,
+        "n_obs": n_obs,
+        "n_eval_obs": evaluation_observations,
+        "clf_correct": classifier_correct,
+        "hmm_correct": hmm_correct,
+        "clf_proxy_accuracy": classifier_accuracy,
+        "hmm_proxy_accuracy": hmm_accuracy,
+        "decoded_observations": decoded_observations,
+        "coverage": decoded_observations / n_obs if n_obs else 0.0,
+        "n_transitions": evaluated_transitions,
+        "connected_transitions": connected_transitions,
+        "continuity_rate": continuity_rate,
+        "n_imputed": len(result.imputed),
+        "log_probability": result.logprob,
+    }
+
+
+def main():
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--trip",
+        type=str,
+        default=None,
+        help="Evaluate one trip, e.g. 00000052",
+    )
+
+    args = parser.parse_args()
+
+    # Load existing features without rebuilding them.
+    df = pd.read_parquet(FEATURES_PATH)
+
+    # Load Member 2's exact feature-column definition.
+    with open(FEATURE_COLUMNS_PATH) as f:
+        X_cols = json.load(f)
+
+    missing = set(X_cols) - set(df.columns)
+
+    if missing:
+        raise ValueError(
+            f"Missing model features: {sorted(missing)}"
+        )
+
+    # Load Member 2's trained classifier.
+    model = joblib.load(MODEL_PATH)
+
+    if not hasattr(model, "predict_proba"):
+        raise ValueError(
+            "The trained model does not support predict_proba."
+        )
+
+    # Use student_test only.
+    test = df[
+        df["partition"] == "student_test"
+    ].copy()
+
+    if args.trip:
+        trip_id = args.trip.zfill(8)
+
+        test = test[
+            test[COL_TRIP].astype(str) == trip_id
+        ]
+
+        if test.empty:
+            raise ValueError(
+                f"Trip {trip_id} was not found in student_test."
+            )
+
+    rows = []
+
+    for trip_id, group in test.groupby(COL_TRIP, sort=True):
+
+        print(f"\nEvaluating trip {trip_id}...")
+
+        row = compare_trip(
+            group,
+            model,
+            X_cols,
+        )
+
+        rows.append(row)
+
+        print(
+            f"Classifier proxy accuracy: "
+            f"{row['clf_proxy_accuracy']:.4f}"
+        )
+
+        print(
+            f"HMM proxy accuracy: "
+            f"{row['hmm_proxy_accuracy']:.4f}"
+        )
+
+        print(
+            f"Directed continuity: "
+            f"{row['continuity_rate']:.4f}"
+        )
+
+    output = pd.DataFrame(rows)
+
+    # Add a weighted overall row.
+    if len(output) > 1:
+
+        total_eval = output["n_eval_obs"].sum()
+        total_obs = output["n_obs"].sum()
+        total_transitions = output["n_transitions"].sum()
+
+        overall = {
+            "trip": "overall",
+            "n_obs": total_obs,
+            "n_eval_obs": total_eval,
+            "clf_correct": output["clf_correct"].sum(),
+            "hmm_correct": output["hmm_correct"].sum(),
+            "clf_proxy_accuracy": (
+                output["clf_correct"].sum() / total_eval
+                if total_eval else float("nan")
+            ),
+            "hmm_proxy_accuracy": (
+                output["hmm_correct"].sum() / total_eval
+                if total_eval else float("nan")
+            ),
+            "decoded_observations": output[
+                "decoded_observations"
+            ].sum(),
+            "coverage": (
+                output["decoded_observations"].sum() / total_obs
+                if total_obs else 0.0
+            ),
+            "n_transitions": total_transitions,
+            "connected_transitions": output[
+                "connected_transitions"
+            ].sum(),
+            "continuity_rate": (
+                output["connected_transitions"].sum()
+                / total_transitions
+                if total_transitions else float("nan")
+            ),
+            "n_imputed": output["n_imputed"].sum(),
+            "log_probability": float("nan"),
+        }
+
+        output = pd.concat(
+            [output, pd.DataFrame([overall])],
+            ignore_index=True,
+        )
+
+    if args.trip:
+        output_path = RESULTS / (
+            f"hmm_vs_classifier_{args.trip.zfill(8)}.csv"
+        )
+    else:
+        output_path = RESULTS / "hmm_vs_classifier.csv"
+
+    output.to_csv(output_path, index=False)
+
+    print("\n===== COMPARISON RESULTS =====")
+    print(output.to_string(index=False))
+
+    print(f"\nSaved results to: {output_path}")
+>>>>>>> Stashed changes
 
 
 if __name__ == "__main__":
     main()
+
