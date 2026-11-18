@@ -97,7 +97,7 @@ def trip_map(trip, partition="student_test", predicted_points=None):
         pfg.add_to(m)
 
     folium.LayerControl(collapsed=False).add_to(m)
-    out = MAPS_DIR / f"map_{trip}.html"
+    out = MAPS_DIR / f"map_{partition}_{trip}.html"
     m.save(str(out))
     return out
 

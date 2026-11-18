@@ -119,6 +119,10 @@ def main() -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
         net_dir.mkdir(parents=True, exist_ok=True)
         present = {p.name for p in base.iterdir() if p.is_dir()}
+        expected = set(trips)
+        for extra in sorted(present - expected):
+            report_rows.append({"trip": extra, "partition": partition,
+                                "status": "UNEXPECTED FOLDER (not in expected id list)"})
         for tid in trips:
             folder = base / tid
             if tid not in present:
