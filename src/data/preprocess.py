@@ -82,29 +82,42 @@ def generate_candidates(track, nodes, arcs):
         "to_lat": node_xy.loc[a["to_node"], "latitude"].values,
         "to_lon": node_xy.loc[a["to_node"], "longitude"].values,
     })
-    cand_rows = []
-    lats = track["latitude"].values
-    lons = track["longitude"].values
-    oids = track["obs_id"].values
-    for i in range(len(track)):
-        dist, plat, plon, frac = point_to_segment_m(
-            lats[i], lons[i],
-            geo["from_lat"].values, geo["from_lon"].values,
-            geo["to_lat"].values, geo["to_lon"].values)
-        order = np.argsort(dist)[:N_CANDIDATES]
-        for rank, j in enumerate(order):
-            if dist[j] <= CANDIDATE_MAX_DIST_M:
-                cand_rows.append({
-                    "trip_id": track["trip_id"].iloc[0] if "trip_id" in track else None,
-                    "obs_id": int(oids[i]), "obs_rank": rank,
-                    "latitude": lats[i], "longitude": lons[i],
-                    "seconds": track["seconds"].iloc[i],
-                    "candidate_id": int(geo["arc_id"].iloc[j]),
-                    "dist_to_segment_m": float(dist[j]),
-                    "proj_lat": float(plat[j]), "proj_lon": float(plon[j]),
-                    "frac_along": float(frac[j]),
-                })
-    return pd.DataFrame(cand_rows), geo
+    # Index padded arc bounding boxes; exact projection still determines rank.
+    from collections import defaultdict
+    grid = defaultdict(list)
+    size = .003
+    max_lat = np.abs(track["latitude"]).max()
+    pad_y = CANDIDATE_MAX_DIST_M / 110540.
+    pad_x = CANDIDATE_MAX_DIST_M / (111320. * np.cos(np.radians(max_lat)))
+    coords = geo[["from_lat", "from_lon", "to_lat", "to_lon"]].to_numpy()
+    for j, (y, x, v, u) in enumerate(coords):
+        for gx in range(int(np.floor((min(x,u)-pad_x)/size)), int(np.floor((max(x,u)+pad_x)/size))+1):
+            for gy in range(int(np.floor((min(y,v)-pad_y)/size)), int(np.floor((max(y,v)+pad_y)/size))+1):
+                grid[gx, gy].append(j)
+    tracks = track.copy()
+    tracks["gx"] = np.floor(tracks.longitude/size).astype(int)
+    tracks["gy"] = np.floor(tracks.latitude/size).astype(int)
+    frames = []
+    for key, observations in tracks.groupby(["gx","gy"]):
+        ids = np.asarray(grid.get(key, []), dtype=int)
+        if not len(ids):
+            continue
+        for start in range(0,len(observations),128):
+            obs = observations.iloc[start:start+128]
+            dist, lat, lon, frac = point_to_segment_m(obs.latitude.to_numpy()[:,None],
+                obs.longitude.to_numpy()[:,None], *coords[ids].T)
+            order = np.argsort(dist,axis=1,kind="stable")[:,:N_CANDIDATES]
+            row, rank = np.where(np.take_along_axis(dist,order,axis=1)<=CANDIDATE_MAX_DIST_M)
+            col = order[row,rank]
+            frame = obs.iloc[row][["trip_id","obs_id","latitude","longitude","seconds"]].copy()
+            frame["obs_rank"] = rank
+            frame["candidate_id"] = geo.arc_id.to_numpy()[ids[col]]
+            frame["dist_to_segment_m"] = dist[row,col]
+            frame["proj_lat"] = lat[row,col]
+            frame["proj_lon"] = lon[row,col]
+            frame["frac_along"] = frac[row,col]
+            frames.append(frame)
+    return pd.concat(frames,ignore_index=True).sort_values(["obs_id","obs_rank"]).reset_index(drop=True), geo
 
 
 def main() -> None:

@@ -68,7 +68,7 @@ def main() -> None:
     out = pd.concat(frames, ignore_index=True)
     out.to_parquet(RESULTS / "features.parquet", index=False)
     print(f"features.parquet: {len(out)} rows, "
-          f"{out['obs_id'].nunique()} observations, "
+          f"{out.groupby(['trip_id','obs_id']).ngroups} observations, "
           f"{out['trip_id'].nunique()} trips")
 
 

@@ -1,0 +1,9 @@
+{
+  "model": "gnb",
+  "parameters": {
+    "var_smoothing": 2.348881295853314e-09
+  },
+  "objective": "grouped_cv_macro_f1",
+  "n_trials": 12,
+  "seed": 42
+}
