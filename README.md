@@ -9,7 +9,7 @@ Given noisy GPS trip observations, PathSnap scores candidate road segments with 
 ## Repository layout
 
 ```
-data/raw/            raw trip files (not committed)
+train/, student_test/  trip folders at the repo root (LOCAL ONLY, gitignored)
 data/clean/          processed observations and candidates
 src/config.py        column names, paths, seeds - single place to adjust to the dataset schema
 src/data/            data inspection and preprocessing

@@ -1,8 +1,11 @@
 """Central configuration.
 
 Dataset layout (confirmed with the team, member 1):
-  data/raw/train/00000001/00000001.{arcs,nodes,route,track}   (trips 1-99 minus test ids)
-  data/raw/student_test/00000000/00000000.{arcs,nodes,route,track}
+  train/00000001/00000001.{arcs,nodes,route,track}          (repo root, trips 1-99 minus test ids)
+  student_test/00000000/00000000.{arcs,nodes,route,track}   (repo root)
+
+The dataset stays local only - train/, student_test/ and Archive.zip
+are gitignored and never committed.
 
 Per trip:
   .track  GPS observations (the trajectory)
@@ -26,8 +29,8 @@ REFERENCE = ROOT / "api" / "reference"   # server-side ground truth, never shipp
 for _d in (DATA_RAW, DATA_CLEAN, RESULTS, MAPS_DIR, ARTIFACTS, REFERENCE):
     _d.mkdir(parents=True, exist_ok=True)
 
-TRAIN_DIR = DATA_RAW / "train"
-TEST_DIR = DATA_RAW / "student_test"
+TRAIN_DIR = ROOT / "train"
+TEST_DIR = ROOT / "student_test"
 
 TEST_TRIPS = [
     "00000000", "00000007", "00000009", "00000040", "00000052",

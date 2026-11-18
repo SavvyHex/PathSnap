@@ -1,7 +1,8 @@
 """Raw-data parsing, cleaning, candidate generation and labelling.
 
-Dataset layout (confirmed): per trip folder under data/raw/train|student_test,
-four files named <trip>.track / .nodes / .arcs / .route.
+Dataset layout (confirmed): per trip folder under train/ or
+student_test/ at the repository root (local only, gitignored), four
+files named <trip>.track / .nodes / .arcs / .route.
 
 Format assumptions (sniffed and corrected on first real run):
   .track  one GPS observation per line: timestamp/order, lat, lon
