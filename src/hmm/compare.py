@@ -1,87 +1,112 @@
-"""Classifier-only vs classifier + HMM/Viterbi comparison.
+"""Compare classifier-only and road-network HMM route reconstruction."""
+import json
 
-Produces the metrics the report section needs: pointwise Top-1
-accuracy and route continuity (fraction of consecutive decoded
-segments that are connected / non-identical-jump-free) for both
-variants, per trip and overall. Decoder parameters (beta) are selected
-on train + student-test only.
-"""
 import joblib
 import numpy as np
 import pandas as pd
 
-from src.config import ARTIFACTS, RESULTS, HMM_BETA, COL_TRIP
-from src.hmm.viterbi import viterbi
+from src.config import ARTIFACTS, DATA_CLEAN, RESULTS, TEST_DIR, HMM_BETA, COL_TRIP
+from src.data.preprocess import parse_trip
 from src.features.build_features import haversine_m
+from src.hmm.road_graph import RoadGraph
+from src.hmm.viterbi import viterbi
 
 
-def continuity(decoded_segments) -> float:
-    """Fraction of consecutive steps that stay on the same segment or
-    move to a plausible next one. A crude proxy until the road graph is
-    wired in: counts large segment-id jumps as discontinuities."""
-    decoded_segments = [s for s in decoded_segments if s != -1]
-    if len(decoded_segments) < 2:
-        return 1.0
-    same = sum(1 for a, b in zip(decoded_segments, decoded_segments[1:]) if a == b)
-    return same / (len(decoded_segments) - 1)
+def _route_continuity(states, positions, arc_ids, fracs, gps_dists, graph, beta):
+    """Fraction of decoded consecutive observations with feasible road paths."""
+    pairs = [(t, int(state)) for t, state in enumerate(states) if state >= 0]
+    if len(pairs) < 2:
+        return float("nan"), 0
+    good = 0
+    for (t0, i0), (t1, i1) in zip(pairs, pairs[1:]):
+        road_dist = graph.transition_distances(
+            [arc_ids[t0][i0]], [fracs[t0][i0]], [arc_ids[t1][i1]], [fracs[t1][i1]],
+        )[0, 0]
+        gps_gap = float(np.sum(gps_dists[t0:t1]))
+        # Allow GPS noise while penalizing implausible detours and disconnected paths.
+        if np.isfinite(road_dist) and road_dist <= gps_gap + max(2 * beta, 0.5 * gps_gap):
+            good += 1
+    return good / (len(pairs) - 1), len(pairs) - 1
 
 
-def compare_trip(df_obs, model, X_cols, beta=HMM_BETA):
-    df_obs = df_obs.sort_values("obs_id").reset_index(drop=True)
-    proba = model.predict_proba(df_obs[X_cols])[:, 1]
-    df_obs = df_obs.assign(score=proba)
+def compare_trip(candidates, track, model, X_cols, graph, beta=HMM_BETA):
+    """Score classifier and HMM on one trip, preserving observations without candidates."""
+    candidates = candidates.sort_values(["obs_id", "obs_rank"]).reset_index(drop=True)
+    track = track.sort_values("obs_id").reset_index(drop=True)
+    n_obs = len(track)
+    candidates["score"] = model.predict_proba(candidates[X_cols])[:, 1]
 
-    # classifier-only
-    best = df_obs.loc[df_obs.groupby("obs_id")["score"].idxmax()]
-    clf_top1 = float((best["label"] == 1).mean())
+    groups = {int(oid): group.reset_index(drop=True)
+              for oid, group in candidates.groupby("obs_id", sort=True)}
+    probs, arc_ids, fracs, classifier = [], [], [], []
+    for t in range(n_obs):
+        group = groups.get(t)
+        if group is None or group.empty:
+            probs.append(np.array([], dtype=float)); arc_ids.append(np.array([], dtype=int))
+            fracs.append(np.array([], dtype=float)); classifier.append(-1)
+            continue
+        score = np.clip(group.score.to_numpy(dtype=float), 1e-12, None)
+        probs.append(score / score.sum())
+        arc_ids.append(group.candidate_id.to_numpy(dtype=int))
+        fracs.append(group.frac_along.to_numpy(dtype=float))
+        classifier.append(int(np.argmax(score)))
 
-    # HMM
-    obs_ids = sorted(df_obs["obs_id"].unique())
-    cand_probs, lats, lons = [], [], []
-    for oid in obs_ids:
-        g = df_obs[df_obs["obs_id"] == oid]
-        cand_probs.append(g["score"].values)
-        lats.append(g["latitude"].iloc[0]); lons.append(g["longitude"].iloc[0])
-    gps_dists = [haversine_m(lats[t], lons[t], lats[t + 1], lons[t + 1])
-                 for t in range(len(obs_ids) - 1)]
-    # Candidate-pair distances need segment geometry; until the road
-    # graph is wired in, approximate every pair by the observation
-    # displacement (neutral transition) - flagged in the report.
-    def cand_dist_fn(t_from, t_to):
-        gap = sum(gps_dists[t_from:t_to])
-        return np.full((len(cand_probs[t_from]), len(cand_probs[t_to])), gap)
+    lat, lon = track.latitude.to_numpy(), track.longitude.to_numpy()
+    gps_dists = haversine_m(lat[:-1], lon[:-1], lat[1:], lon[1:]).tolist()
 
-    res = viterbi(cand_probs, gps_dists, cand_dist_fn, beta=beta)
+    def candidate_distances(t_from, t_to):
+        return graph.transition_distances(arc_ids[t_from], fracs[t_from],
+                                         arc_ids[t_to], fracs[t_to])
 
-    ref, dec = [], []
-    for t, oid in enumerate(obs_ids):
-        g = df_obs[df_obs["obs_id"] == oid]
-        if res.sequence[t] >= 0 and (g["label"] == 1).any():
-            ref.append(1)
-            dec.append(int(g.iloc[res.sequence[t]]["label"] == 1))
-    hmm_top1 = float(np.mean(dec)) if dec else float("nan")
-    return {"trip": df_obs[COL_TRIP].iloc[0],
-            "clf_top1": clf_top1, "hmm_top1": hmm_top1,
-            "n_obs": len(obs_ids), "n_imputed": len(res.imputed)}
+    decoded = viterbi(probs, gps_dists, candidate_distances, beta=beta)
+    eval_obs = [t for t, group in groups.items() if (group.label == 1).any()]
+    clf_top1 = float(np.mean([groups[t].iloc[classifier[t]].label == 1 for t in eval_obs])) if eval_obs else float("nan")
+    hmm_top1 = float(np.mean([groups[t].iloc[decoded.sequence[t]].label == 1
+                              for t in eval_obs if decoded.sequence[t] >= 0])) if eval_obs else float("nan")
+    clf_cont, clf_transitions = _route_continuity(classifier, range(n_obs), arc_ids, fracs, gps_dists, graph, beta)
+    hmm_cont, hmm_transitions = _route_continuity(decoded.sequence, range(n_obs), arc_ids, fracs, gps_dists, graph, beta)
+    return {
+        "trip": str(candidates[COL_TRIP].iloc[0]), "clf_top1": clf_top1, "hmm_top1": hmm_top1,
+        "clf_continuity": clf_cont, "hmm_continuity": hmm_cont,
+        "n_obs": n_obs, "n_candidate_obs": len(groups), "n_imputed": len(decoded.imputed),
+        "clf_transitions": clf_transitions, "hmm_transitions": hmm_transitions,
+    }
 
 
 def main() -> None:
     df = pd.read_parquet(RESULTS / "features.parquet")
-    import json
     X_cols = json.loads((ARTIFACTS / "feature_columns.json").read_text())
     model = joblib.load(ARTIFACTS / "model_tuned.joblib")
-    rows = []
     test = df[df["partition"] == "student_test"]
-    for trip_id, g in test.groupby(COL_TRIP):
-        rows.append(compare_trip(g, model, X_cols))
+    rows = []
+    for trip_id, candidates in test.groupby(COL_TRIP):
+        trip_id = str(trip_id)
+        folder = TEST_DIR / trip_id
+        _, track, _, _, _ = parse_trip(folder)
+        track["obs_id"] = np.arange(len(track))
+        arcs_path = DATA_CLEAN / "network" / f"{trip_id}.arcs.parquet"
+        graph = RoadGraph(pd.read_parquet(arcs_path))
+        rows.append(compare_trip(candidates, track, model, X_cols, graph))
     out = pd.DataFrame(rows)
-    out.loc["overall"] = {"trip": "overall",
-                          "clf_top1": out["clf_top1"].mean(),
-                          "hmm_top1": out["hmm_top1"].mean(),
-                          "n_obs": out["n_obs"].sum(),
-                          "n_imputed": out["n_imputed"].sum()}
+    if not out.empty:
+        def weighted_mean(values, weights):
+            values, weights = np.asarray(values, dtype=float), np.asarray(weights, dtype=float)
+            valid = np.isfinite(values) & (weights > 0)
+            return float(np.average(values[valid], weights=weights[valid])) if valid.any() else float("nan")
+
+        out.loc[len(out)] = {
+            "trip": "overall",
+            "clf_top1": weighted_mean(out.clf_top1, out.n_candidate_obs),
+            "hmm_top1": weighted_mean(out.hmm_top1, out.n_candidate_obs),
+            "clf_continuity": weighted_mean(out.clf_continuity, out.clf_transitions),
+            "hmm_continuity": weighted_mean(out.hmm_continuity, out.hmm_transitions),
+            "n_obs": out.n_obs.sum(), "n_candidate_obs": out.n_candidate_obs.sum(),
+            "n_imputed": out.n_imputed.sum(),
+            "clf_transitions": out.clf_transitions.sum(), "hmm_transitions": out.hmm_transitions.sum(),
+        }
+    RESULTS.mkdir(parents=True, exist_ok=True)
     out.to_csv(RESULTS / "hmm_vs_classifier.csv", index=False)
-    print(out.to_string())
+    print(out.to_string(index=False))
 
 
 if __name__ == "__main__":
